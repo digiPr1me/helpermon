@@ -44,20 +44,22 @@ find the answer afterwards, which is not true of a chat message.
 Pull requests are welcome, and small ones are easier to accept than large ones.
 Four house rules, each of which exists because breaking it cost a working day:
 
-1. **Run the test suites.** They need no emulator and take seconds:
+1. **Run the test suites.** They need no emulator and take seconds. In
+   PowerShell:
 
    ```
-   py test_planner.py; py test_router.py; py test_world.py; py test_verify.py
-   py test_pace.py; py test_capture.py; py test_dungeon_flow.py
-   py test_skewer_flow.py; py test_wake_flow.py; py test_launcher.py
-   py test_guard.py
+   Get-ChildItem test_*.py | ForEach-Object { py $_.Name }
    ```
+
+   By pattern rather than by name, so a suite added later is picked up
+   without anybody having to remember this file. Every one of them has to
+   say it passed.
 
 2. **No image material from the game, ever.** No screenshots, no crops, no
-   `calib.json`, nothing under `templates/` or `digits/`. `py release.py
-   --check` refuses to build if any of it would ship. The one exception is
-   `docs/images/`, which holds pictures of Helpermon's own windows for the
-   installation page.
+   `calib.json`. `py release.py --check` refuses to build if any of it
+   would ship. `templates/` and `digits/` are the one exception, and only
+   because a published copy is unusable without them: they are what the
+   board bots read the screen with.
 
 3. **Never trust a single frame, and never click blindly.** State changes are
    confirmed across two frames and every action is verified against something

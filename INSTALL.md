@@ -6,8 +6,8 @@
 > game are the property of their owners. Nothing from the game is contained
 > here; what the bots need, they learn from your own screen.
 
-Helpermon plays three parts of Digimon UP for you: the dungeon list, the
-**Digital World Search** and the **Midsummer Digimon Night Market**.
+Helpermon plays parts of Digimon UP for you: the dungeon list and the
+**Digital World Search**.
 
 This page is the installation, step by step, with pictures. It takes about
 fifteen minutes, and most of that is waiting for a download. What the program
@@ -29,9 +29,6 @@ does once it runs is in [QUICKSTART.md](QUICKSTART.md).
 On this page, open **Releases** in the column on the right and take the newest
 `helpermon-x.y.zip` from **Assets**.
 
-<!-- SCREENSHOT 01: the Releases page, with the ZIP visible under Assets -->
-![The Releases page with helpermon-1.0.zip under Assets](docs/images/01-releases-page.png)
-
 Do not use the green **Code** button. That gives you the development tree
 rather than a release, and it is a different thing.
 
@@ -41,9 +38,6 @@ rather than a release, and it is a different thing.
 
 Right-click the downloaded file, **Properties**, and at the bottom tick
 **Unblock**, then **OK**.
-
-<!-- SCREENSHOT 02: the Properties dialog of the ZIP, the Unblock tick at the bottom -->
-![The ZIP's Properties dialog, with the Unblock box ticked at the bottom](docs/images/02-unblock-zip.png)
 
 This is the one step that causes trouble when it is skipped. Windows marks
 every file that came from the internet, and unpacking hands that mark to every
@@ -59,9 +53,6 @@ folder, unblock the ZIP, unpack it again.
 
 Unpack it somewhere under your own user folder, for example
 `Documents\Helpermon`.
-
-<!-- SCREENSHOT 03: the unpacked folder in Explorer, install.bat visible -->
-![The unpacked Helpermon folder in Explorer, with install.bat in it](docs/images/03-unpacked-folder.png)
 
 Not into `Program Files`, which needs administrator rights for every write, and
 not left sitting in `Downloads`: what the bots learn from your screen is stored
@@ -79,16 +70,10 @@ The installer looks for Python first. If there is none, it asks whether it
 should fetch it. Answer yes and it installs into your own user folder, so
 Windows does not ask for an administrator password.
 
-<!-- SCREENSHOT 04: install.bat asking whether it should install Python -->
-![The installer asking whether it should download and install Python](docs/images/04-install-python-question.png)
-
 Then it builds a `.venv` folder beside the program and puts the packages in it.
 That is a few minutes the first time. Keeping the packages in their own folder
 means this cannot disturb any other Python on your machine, and uninstalling
 Helpermon later is deleting a folder.
-
-<!-- SCREENSHOT 05: the installer's last screen, shortcut created -->
-![The installer reporting that it finished and created the desktop shortcut](docs/images/05-install-finished.png)
 
 ---
 
@@ -96,9 +81,6 @@ Helpermon later is deleting a folder.
 
 The installer puts a **Helpermon** shortcut on your desktop. That is what you
 start from now on.
-
-<!-- SCREENSHOT 06: the Helpermon shortcut on the desktop -->
-![The Helpermon shortcut on the Windows desktop](docs/images/06-desktop-shortcut.png)
 
 ### Prefer a terminal?
 
@@ -120,19 +102,14 @@ looks like, so it is worth a minute.
 stays yours, and the emulator window may sit behind other windows. You have to
 switch it on first: in LDPlayer, **Settings → Other settings → ADB debugging**.
 
-<!-- SCREENSHOT 07: LDPlayer settings with ADB debugging switched on -->
-![LDPlayer's settings, Other settings, with ADB debugging enabled](docs/images/07-ldplayer-adb-setting.png)
-
 Then press **Check ADB now** in the dialog. That asks the emulator instead of
 guessing.
 
-<!-- SCREENSHOT 08: Helpermon's first dialog, about ADB versus mouse input -->
-![Helpermon's first dialog, asking how it should reach the emulator](docs/images/08-first-run-input-dialog.png)
-
 **Without ADB**, the bot moves your real mouse. That works, with three
-conditions: leave the mouse alone while a bot runs — or tick **Pause Bot on
-mouse move** at the top right and it stops the moment you touch it — keep the
-emulator window in front and uncovered, and do not let the screen go to sleep.
+conditions: leave the mouse alone while a bot runs — you and the bot are
+sharing it, and every move of yours goes into the game as well, so press F7
+when you want it back — keep the emulator window in front and uncovered, and
+do not let the screen go to sleep.
 While the display sleeps, screen capture keeps returning the last picture that
 was drawn, and a bot reading that clicks at what was there minutes ago.
 
@@ -143,18 +120,12 @@ put that bot on mouse input for the rest of the session.
 
 The second dialog is the legal notice, and you have to read it.
 
-<!-- SCREENSHOT 09: the legal notice dialog -->
-![The legal notice shown on first launch](docs/images/09-first-run-legal-notice.png)
-
 ---
 
 ## 7. First run
 
 After the dialogs you land on **Start here**, which offers two ways in with an
 **OR** between them.
-
-<!-- SCREENSHOT 10: the Start here page, with "Try it right now" at the top -->
-![The Start here page, with Try it right now above the three numbered steps](docs/images/10-start-here.png)
 
 **Take the short way first.** The dungeon bot needs nothing taught — it
 recognises buttons by colour and position and works in every game language — so
@@ -165,12 +136,10 @@ On the Dungeons page, press **Dry run** before **Start**. A dry run plans
 everything and clicks nothing, and it is also the thing to attach if you ever
 report a problem.
 
-<!-- SCREENSHOT 11: the Dungeons page with a dry run in the log -->
-![The Dungeons page, with the log showing a dry run](docs/images/11-dungeons-dry-run.png)
-
-The other two bots have to be taught what your screen looks like first. That is
-**Set up this bot** at the bottom right of their page, it takes a few minutes,
-and it is described in [QUICKSTART.md](QUICKSTART.md#creating-the-templates).
+The Digital World Search bot has to be taught what your screen looks like
+first. That is **Set up this bot** at the bottom right of its page, it takes
+a few minutes, and it is described in
+[QUICKSTART.md](QUICKSTART.md#creating-the-templates).
 
 ---
 
@@ -181,6 +150,40 @@ and `.venv` are not in the ZIP, so nothing you taught the bots is lost.
 
 If you use git, `git clone` and `git pull` do the same job — and files from git
 carry no internet mark, so step 2 does not apply to them.
+
+---
+
+## Moving the folder somewhere else
+
+Move it, then double-click `install.bat` in the new place. That is the whole
+procedure, and it takes about a minute.
+
+Do **not** unpack the ZIP again to move it. Everything you taught the bots is
+in `userdata`, and a fresh copy does not have it — you would be starting the
+setup wizard from the beginning for nothing.
+
+What actually breaks is smaller than it looks. `.venv`, the folder of packages
+`install.bat` builds, records the path it was built at, so it stops working the
+moment that path changes. The desktop shortcut and the starter point into it,
+which is why nothing opens afterwards. `install.bat` notices the broken `.venv`,
+builds it again, writes the starter again and puts a fresh shortcut on the
+desktop. `userdata` and your settings are not touched by any of it.
+
+Two things worth knowing:
+
+- **`Start Helpermon.bat` tells you this itself.** Double-clicked in a folder
+  that has been moved, it says so, names the old folder and the new one, and
+  offers to run `install.bat` for you.
+- **The old desktop shortcut still points at the old folder.** It is not
+  repaired and not removed, because a shortcut of that name may belong to
+  another copy of Helpermon. Delete it yourself; `install.bat` has put a
+  working one beside it.
+
+If the shortcut is the only thing missing — deleted by accident, or
+`install.bat` reported it could not be created — Helpermon can put it back
+on its own: **About**, then **Create it again** under *Desktop shortcut*. That
+button cannot help after a move, since a moved installation does not open far
+enough to press it.
 
 ---
 
@@ -195,9 +198,6 @@ same decision:
 2. **What you taught it** — the `userdata` folder and your settings. This is the
    part that cannot be downloaded again. Say no if you are reinstalling or
    moving the folder elsewhere.
-
-<!-- SCREENSHOT 12 (optional): remove.bat asking its two questions -->
-![remove.bat asking whether to remove the installation and the learned data](docs/images/12-remove-bat.png)
 
 What is left afterwards is text files; delete the folder to finish, since the
 file cannot delete the folder it is running from. Python itself is not touched,

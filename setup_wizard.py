@@ -13,17 +13,14 @@ Steps
   3. Objects, label the colourful finds
   4. Pyramid, confirm one suggestion
   5. Banners, the wizard provokes the first text itself
-  6. Skewer, name the twelve ingredient icons of the cooking minigame
-  7. Game icon, click the game's icon so the bot can start it itself
-  8. Open cases, label finds collected during runs
+  6. Game icon, click the game's icon so the bot can start it itself
+  7. Open cases, label finds collected during runs
 
-Steps 2 to 5 belong to the board minigame and need its board on screen. Step
-6 belongs to the skewer bot and needs the cooking minigame on screen instead,
-so it asks only for a frame, not for a calibrated board -- see grab().
+Steps 2 to 5 belong to the board minigame and need its board on screen.
 
 Rare types do not show up in a short session. Green ticket, pink ticket, claw,
 paw and fireball on the ground appear seldom, so the bot queues unknown finds
-during runs and you label them later in step 6.
+during runs and you label them later in step 7.
 """
 
 import argparse
@@ -35,18 +32,18 @@ from tkinter import messagebox
 
 import cv2
 
-import engine
+import capture
 import learning
 import userdata
 import vision
 
-STEPS = ["Overview", "Counters", "Objects", "Pyramid", "Banners", "Skewer",
+STEPS = ["Overview", "Counters", "Objects", "Pyramid", "Banners",
          "Game icon", "Open cases"]
 
 # Which of those steps belong to which bot, and the name to put on the
 # window. One bot, one window, and nothing in it that belongs to another:
-# setting up the Night Market used to walk you straight on into the World
-# Search's four steps, with no sign that you had left the thing you came for.
+# a shared wizard used to walk you straight from one bot's steps into
+# another's, with no sign that you had left the thing you came for.
 #
 # The full list stays reachable by starting this file with no --bot, which is
 # where Diagnostics and the overview live.
@@ -54,14 +51,13 @@ STEPS = ["Overview", "Counters", "Objects", "Pyramid", "Banners", "Skewer",
 # by step number, because the sequence is no longer always the same one.
 PAGE_FOR = {"Overview": "page_overview", "Counters": "page_counters",
             "Objects": "page_objects", "Pyramid": "page_pyramid",
-            "Banners": "page_banner", "Skewer": "page_skewer",
+            "Banners": "page_banner",
             "Game icon": "page_icon", "Open cases": "page_queue"}
 
 BOT_STEPS = {
     "dungeon": ("Dungeons", ["Game icon"]),
     "mini": ("Digital World Search",
              ["Counters", "Objects", "Pyramid", "Banners", "Open cases"]),
-    "skewer": ("Midsummer Digimon Night Market", ["Skewer"]),
 }
 COUNTER_ORDER = ["top_orange", "top_green", "top_pink", "paws", "claws",
                  "fireballs", "meters"]
@@ -173,9 +169,15 @@ class Wizard(tk.Tk):
         self.update_idletasks()
 
     def ensure_cap(self):
+        """The same source a bot would use: the stored switch, not a fixed
+        preference of its own. The learned crops are scale-free (see
+        PLAN_ADB_ONLY.md, section 2), so the only thing that matters is
+        using the same source here as whatever plays the game -- learning
+        in one and playing in the other is the mistake this avoids.
+        """
         if self.cap is None:
             self.say("looking for the emulator")
-            self.cap = engine.open_capture(engine.Settings())
+            self.cap = capture.open_for(userdata.adb_mode())
         return self.cap
 
     def grab(self):
@@ -240,21 +242,21 @@ class Wizard(tk.Tk):
     def _bot_summary(self, st):
         """(finished, what to say) for whatever this window was set up for."""
         if self.bot == "dungeon":
+            # Finished either way. The dungeon bot plays without a single
+            # learned image, and the icon this step teaches is optional: it
+            # is what lets the emulator check tell the emulator's own home
+            # screen from the game. Reporting "not finished yet" over an
+            # optional step is how a wizard teaches people to ignore it.
             try:
                 import launcher
                 have = bool(launcher.have_icon())
             except Exception:
                 have = False
-            return have, ("The game icon is learned, so Instant AFK can open "
-                          "the game by itself." if have else
-                          "No game icon yet. The dungeon bot plays without "
-                          "one; only Instant AFK needs it.")
-        if self.bot == "skewer":
-            return st["skewer_ready"], (
-                "All twelve ingredient icons are there, the Night Market bot "
-                "can read the grid." if st["skewer_ready"] else
-                "Ingredient icons: %d of %d."
-                % (len(st["skewer_have"]), st["skewer_total"]))
+            return True, ("The game icon is learned, so Helpermon can tell "
+                          "the emulator's home screen from the game." if have
+                          else "No game icon. The dungeon bot plays without "
+                          "one; it only sharpens what Start here says about "
+                          "the emulator.")
         if self.bot == "mini":
             return st["fertig"], (
                 "Everything the Digital World Search needs is there."
@@ -262,13 +264,11 @@ class Wizard(tk.Tk):
                 "Board images: %s\nDigits: %s"
                 % (", ".join(st["missing"]) or "none",
                    ", ".join(st["ziffern_fehlen"]) or "none"))
-        every = st["fertig"] and st["skewer_ready"]
-        return every, (
-            "Everything needed is there, all bots can work." if every else
-            "Board images: %s\nDigits: %s\nSkewer icons: %d of %d"
+        return st["fertig"], (
+            "Everything needed is there, all bots can work." if st["fertig"]
+            else "Board images: %s\nDigits: %s"
             % (", ".join(st["missing"]) or "none",
-               ", ".join(st["ziffern_fehlen"]) or "none",
-               len(st["skewer_have"]), st["skewer_total"]))
+               ", ".join(st["ziffern_fehlen"]) or "none"))
 
     # ------------------------------------------------------------------
     def show(self):
@@ -284,7 +284,8 @@ class Wizard(tk.Tk):
         name = self.order[self.step]
         self.title_lab.configure(text=name)
         # Only worth a counter when there is more than one. "Step 1 of 1" on
-        # the Night Market's single step reads like something is missing.
+        # the dungeon bot's single Game icon step reads like something is
+        # missing.
         self.step_lab.configure(
             text="" if len(self.order) == 1
             else "Step %d of %d" % (self.step + 1, len(self.order)))
@@ -385,17 +386,7 @@ class Wizard(tk.Tk):
                            "copy. To start clean, learn them again here."
                            % len(st["shipped"]))).pack(anchor="w", pady=(8, 0))
 
-        # The skewer bot's icons are counted, not listed by name: they are
-        # named by whoever learns them, so only their number says anything.
-        # Without this line setup can report "ready" while the skewer bot
-        # cannot name a single ingredient.
-        tk.Label(self.body, anchor="w", pady=10, justify="left",
-                 text=("Skewer minigame, ingredient icons\n  %d of %d learned"
-                       % (len(st["skewer_have"]), st["skewer_total"]))
-                 ).pack(anchor="w")
-
-        rows = [("Board minigame", st["fertig"]),
-                ("Skewer minigame", st["skewer_ready"])]
+        rows = [("Board minigame", st["fertig"])]
         for name, ready in rows:
             tk.Label(self.body, fg="#1a7f37" if ready else "#b3261e",
                      font=("Segoe UI", 11, "bold"),
@@ -410,86 +401,6 @@ class Wizard(tk.Tk):
                   command=self._diagnostics).pack(anchor="w")
 
     # ------------------------------------------------------------------
-    def page_skewer(self):
-        """Name the twelve ingredient icons of the cooking minigame.
-
-        Same job learn_skewer.py does standalone, and the same crops: the 4x3
-        grid is at fixed relative positions, so nothing has to be searched
-        for. This page needs the cooking minigame on screen, not the board.
-        """
-        import skewer
-
-        tk.Label(self.body, justify="left", font=("Segoe UI", 10),
-                 text=("The skewer bot plays the cooking minigame and has to "
-                       "tell its\ntwelve ingredients apart.\n\n"
-                       "Open that minigame in the emulator, press 'Grab a new "
-                       "frame'\nbelow, then give every icon a name and save "
-                       "it. The names are\nyours to choose, only the twelve "
-                       "images matter.")).pack(anchor="w", pady=(6, 8))
-        if not self.need_image():
-            return
-
-        learned = skewer.load_ingredient_templates(force=True)
-        cells = len(skewer.GRID_COLS_FX) * len(skewer.GRID_ROWS_FY)
-        tk.Label(self.body, fg="#666",
-                 text="%d icon(s) learned so far, %d cells to fill"
-                      % (len(learned), cells)).pack(anchor="w", pady=(0, 6))
-        if len(learned) > cells:
-            tk.Label(self.body, justify="left", fg="#b3261e",
-                     text=("There are more icons than cells. If two of them "
-                           "are the same\ningredient under different names, "
-                           "the matcher has no margin\nbetween them and "
-                           "refuses to name that cell at all.\n"
-                           "Save all twelve again to clean this up.")
-                     ).pack(anchor="w", pady=(0, 6))
-
-        buttons = tk.Frame(self.body)
-        buttons.pack(anchor="w", pady=(0, 8))
-        tk.Button(buttons, text="Save all twelve",
-                  command=self._save_all_skewer).pack(side="left")
-        tk.Button(buttons, text="Test match",
-                  command=self._test_skewer).pack(side="left", padx=8)
-        tk.Label(buttons, fg="#666",
-                 text="  reads every cell back, each should name itself"
-                 ).pack(side="left")
-
-        grid = tk.Frame(self.body)
-        grid.pack(anchor="w")
-        self.skewer_cells = []
-        i = 0
-        for fy in skewer.GRID_ROWS_FY:
-            for fx in skewer.GRID_COLS_FX:
-                box = tk.Frame(grid, padx=6, pady=6, relief="groove", bd=1)
-                box.grid(row=i // len(skewer.GRID_COLS_FX),
-                         column=i % len(skewer.GRID_COLS_FX))
-                crop = skewer.crop_rel(self.frame_img, fx, fy,
-                                       skewer.GRID_CELL_FW, skewer.GRID_CELL_FH)
-                photo = to_photo(crop, scale=3)
-                if photo:
-                    self.photos.append(photo)
-                    tk.Label(box, image=photo).pack()
-                # What is already learned wins over the placeholder list.
-                # Offering INGREDIENT_NAMES to someone whose icons carry
-                # their own names is exactly how one "Save all twelve" turns
-                # into four duplicate ingredients.
-                starter = None
-                if learned:
-                    starter, _val = skewer.match_icon(crop, learned)
-                if not starter:
-                    starter = (skewer.INGREDIENT_NAMES[i]
-                               if i < len(skewer.INGREDIENT_NAMES)
-                               else "ingredient_%d" % i)
-                var = tk.StringVar(value=starter)
-                tk.Entry(box, textvariable=var, width=14).pack(pady=2)
-                match = tk.Label(box, text="", fg="#555")
-                match.pack()
-                tk.Button(box, text="Save", width=10,
-                          command=lambda fx=fx, fy=fy, v=var:
-                          self._save_skewer_icon(fx, fy, v)).pack(pady=2)
-                self.skewer_cells.append({"fx": fx, "fy": fy, "var": var,
-                                          "match": match})
-                i += 1
-
     def page_icon(self):
         """Learn the game's icon by clicking it on a picture of the screen.
 
@@ -498,6 +409,14 @@ class Wizard(tk.Tk):
         screen and clicks it, which works on any emulator.
         """
         import launcher
+
+        if userdata.adb_mode():
+            tk.Label(self.body, justify="left", font=("Segoe UI", 10),
+                     fg="#5f6368",
+                     text=("Only needed if you turn ADB off. With ADB, "
+                           "Helpermon starts the game by its package name "
+                           "and needs no picture of the icon.")
+                     ).pack(anchor="w", pady=(0, 8))
 
         tk.Label(self.body, justify="left", font=("Segoe UI", 10),
                  text=("So the bot can start the game itself, it needs to "
@@ -573,119 +492,6 @@ class Wizard(tk.Tk):
             self.say("icon saved, but it does not match itself convincingly. "
                      "Try clicking the centre of the icon.")
         self.show()
-
-    def _skewer_crop(self, fx, fy):
-        import skewer
-        return skewer.crop_rel(self.frame_img, fx, fy,
-                               skewer.GRID_CELL_FW, skewer.GRID_CELL_FH)
-
-    def _save_skewer_icon(self, fx, fy, var):
-        import skewer
-        name = var.get().strip()
-        if not name:
-            self.say("type a name first")
-            return
-        skewer.save_ingredient_template(name, self._skewer_crop(fx, fy))
-        self.say("%s saved" % name)
-
-    def _save_all_skewer(self):
-        import skewer
-        names = [c["var"].get().strip() for c in self.skewer_cells]
-        if not all(names):
-            messagebox.showwarning("Name missing",
-                                   "Every icon needs a name before saving.")
-            return
-        # A repeated name is not a small mistake: the second save overwrites
-        # the first, and the bot ends up with eleven icons for twelve cells.
-        if len(set(names)) != len(names):
-            messagebox.showwarning(
-                "Names repeat",
-                "Two icons share a name, so one would overwrite the other.\n"
-                "Give every icon its own name.")
-            return
-        for cell, name in zip(self.skewer_cells, names):
-            skewer.save_ingredient_template(name,
-                                            self._skewer_crop(cell["fx"],
-                                                              cell["fy"]))
-        self.say("%d icons saved" % len(names))
-        self._retire_extra_icons(names)
-        self.show()
-
-    def _retire_extra_icons(self, keep):
-        """Offer to move aside icons that are not on this grid.
-
-        An icon left over under an old name is not harmless: it is a second
-        copy of an ingredient that is now also saved under a new one, and two
-        identical candidates leave match_icon no margin, so it names neither.
-        Moved, never deleted -- the player may have meant to keep them.
-        """
-        import shutil
-
-        import skewer
-
-        learned = skewer.load_ingredient_templates(force=True)
-        extra = sorted(set(learned) - set(keep))
-        if not extra:
-            return
-        if not messagebox.askyesno(
-                "More icons than cells",
-                "There are now %d icons for %d cells.\n\n"
-                "These %d are not on this grid:\n  %s\n\n"
-                "If any of them is the same ingredient as one you just "
-                "saved, the matcher cannot tell the two apart and will "
-                "refuse to name that cell.\n\n"
-                "Move them out of the way?"
-                % (len(learned), len(keep), len(extra), ", ".join(extra))):
-            return
-        folder = userdata.templates_dir()
-        target = os.path.join(folder, "replaced")
-        os.makedirs(target, exist_ok=True)
-        moved = 0
-        for name in extra:
-            source = os.path.join(folder, "skewer_" + name + ".png")
-            if os.path.exists(source):
-                shutil.move(source, os.path.join(target,
-                                                 "skewer_" + name + ".png"))
-                moved += 1
-        skewer.forget_ingredient_templates()
-        self.say("%d icons saved, %d moved to %s" % (len(keep), moved, target))
-
-    def _test_skewer(self):
-        """Read every cell back against what was saved. Nothing is trusted
-        because it was written; it counts once it reads back as itself.
-
-        Judged against the typed name only where that name was actually
-        learned. The boxes pre-fill with skewer.INGREDIENT_NAMES, which are
-        placeholders -- marking a cell wrong because the reading disagrees
-        with a name nobody ever saved would flag correct cells as broken.
-        """
-        import skewer
-        templates = skewer.load_ingredient_templates(force=True)
-        if not templates:
-            self.say("nothing learned yet, save the icons first")
-            return
-        wrong, unjudged = 0, 0
-        for cell in self.skewer_cells:
-            name, val = skewer.match_icon(self._skewer_crop(cell["fx"],
-                                                            cell["fy"]),
-                                          templates)
-            typed = cell["var"].get().strip()
-            if typed not in templates:
-                colour = "#555"  # nothing to compare against, not a verdict
-                unjudged += 1
-            elif name == typed:
-                colour = "#1a7f37"
-            else:
-                colour = "#b3261e"
-                wrong += 1
-            cell["match"].configure(text="%s  %.2f" % (name or "?", val),
-                                    fg=colour)
-        note = ("%d cell(s) disagree with the name in the box" % wrong
-                if wrong else "every judged cell names itself")
-        if unjudged:
-            note += ", %d not judged (that name is not learned)" % unjudged
-        self.say("matched against %d learned icon(s), %s"
-                 % (len(templates), note))
 
     # ------------------------------------------------------------------
     def _set_only(self, value):
@@ -979,7 +785,7 @@ class Wizard(tk.Tk):
 
 
 def step_index(name, order):
-    """Step number from a name, matched loosely so callers can say "skewer"."""
+    """Step number from a name, matched loosely so callers can say "banners"."""
     wanted = (name or "").strip().lower()
     for i, step in enumerate(order):
         if step.lower() == wanted:
@@ -993,7 +799,7 @@ def main():
                     help="set up one bot only: %s"
                          % ", ".join(sorted(BOT_STEPS)))
     ap.add_argument("--step", default="",
-                    help="open on this step, e.g. --step skewer")
+                    help="open on this step, e.g. --step banners")
     ap.add_argument("--note", default="",
                     help="one line explaining why the wizard was opened here")
     args = ap.parse_args()

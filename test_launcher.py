@@ -9,6 +9,7 @@ Uses a throwaway data folder, never the real userdata.
 
   py test_launcher.py
 """
+import io
 import os
 import shutil
 import sys
@@ -304,6 +305,97 @@ for bot in app.BOTS:
     assert bot["step"] in order, \
         "%s opens on %r, which is not in %s" % (key, bot["step"], order)
 print("every bot has its own steps, and only its own")
+
+# --- everything the gate is asked about, not just the three bots ----------
+# `_may_run` is one function in front of every start in the window, and it
+# ends in the requirements notice, which reads two tables: `_bot_by_key` for
+# the name on it and REQUIREMENTS for the lines in it. The passive helper
+# was in neither. `_bot_by_key` says nothing about that -- it falls back to
+# Dungeons -- so the notice came up titled after the wrong bot and then
+# raised KeyError half way down, leaving a modal dialog with a grab on it,
+# no buttons, and no way on. The loop above only ever looked at BOTS, and
+# the helper is not one.
+#
+# Read out of the source rather than listed here, for the same reason
+# test_unlock.py reads it: a new start button is a new line of code, not a
+# line in a test file somebody remembers to add.
+import re
+
+app_src = io.open(os.path.join(os.path.dirname(os.path.abspath(app.__file__)),
+                               "app.py"), encoding="utf-8").read()
+gated = sorted(set(re.findall(r'_may_run\("([^"]+)"\)', app_src)))
+assert gated, "nothing in the window goes through the gate"
+for key in gated:
+    assert key in app.REQUIREMENTS, \
+        "%s can be started and has nothing to say about what it needs" % key
+    assert app.REQUIREMENTS[key], key
+    # The fall back in `_bot_by_key` is right where it is used and wrong
+    # here: it would put another bot's name on this one's notice, so the
+    # tables are asked directly.
+    entry = app.EXTRA_BOTS.get(key) or next(
+        (b for b in app.BOTS if b["key"] == key), None)
+    assert entry, "%s can be started and is in neither bot table" % key
+    for field in ("name", "short"):
+        assert entry.get(field), "%s has no %s" % (key, field)
+print("every key the gate is asked about has a name and its own "
+      "requirements: %s" % ", ".join(gated))
+
+# --- the way into the wizard is offered only where it leads somewhere -----
+# `_setup_for` reads `bot["step"]` to say which wizard page to open on, so a
+# "Set up this bot" button on a bot without one dies of KeyError on the
+# press. Summon's page carried exactly that, and nothing found out: no suite
+# renders a page, and the button is one nobody on that page needs. The
+# decision is a function rather than a condition inside the widget so that
+# it can be asked here at all.
+offered = [bot for bot in list(app.BOTS) + list(app.EXTRA_BOTS.values())
+           if app.needs_setup_button(bot)]
+assert offered, "no page offers the way into setup at all"
+for bot in offered:
+    assert bot.get("step"),         "%s offers a setup button and has no step to open on" % bot["key"]
+    assert bot["key"] not in app.EXTRA_BOTS,         "%s has no wizard page and is offered one" % bot["key"]
+# And the other way round: a bot whose box says nothing has to be taught
+# must not be offered the button, which is the dungeon bot's whole case.
+assert not app.needs_setup_button(app.BOTS[0]),     "the dungeon bot needs nothing taught and is offered setup anyway"
+print("the setup button is offered only where the wizard has a page: %s"
+      % ", ".join(bot["name"] for bot in offered))
+
+# --- every requirements box on every page has something to say ------------
+# The Bond & Quest page was the one page with no box at all, which is how a
+# helper whose only failure mode is standing on the wrong screen was the
+# page that never said which screen it wants. Read out of the source, so a
+# new page is covered without anybody adding a line here.
+drawn = sorted(set(re.findall(r'_requirements\(\w+, "([^"]+)"', app_src)))
+assert drawn, "no page says what it needs"
+for key in drawn:
+    assert key in app.REQUIREMENTS,         "%s draws a requirements box out of a table that has no entry" % key
+    assert app.REQUIREMENTS[key], key
+for key in app.REQUIREMENTS:
+    assert key in drawn,         "%s has requirements and no page that shows them" % key
+print("every page says what it needs, and every entry is shown: %s"
+      % ", ".join(drawn))
+
+# --- the report dialog knows about every bot ------------------------------
+# "What is this about?" was built out of BOTS alone, so the two pages that
+# are not in BOTS -- Special Summon and the quest loop, the newest things in
+# the window and the likeliest to be reported -- could not be named in a
+# report at all. Whoever wrote one had to file it under another bot's name,
+# and the log that travelled with it was that other bot's log. Both tables
+# again, checked the same way the gate above is.
+parts = app.feedback_parts()
+labels = [label for label, _key in parts]
+assert len(labels) == len(set(labels)), "two menu entries read the same: %s" % labels
+named = {key for _label, key in parts if key}
+for bot in list(app.BOTS) + list(app.EXTRA_BOTS.values()):
+    assert bot["key"] in named,         "%s has a page of its own and cannot be named in a report" % bot["key"]
+    assert bot["name"] in labels, bot["name"]
+# And the other way: a key in the menu that no page answers to would send
+# the dialog looking for a log that does not exist.
+known = {b["key"] for b in app.BOTS} | set(app.EXTRA_BOTS)
+assert named <= known, "menu names a bot that is in neither table: %s" % (
+    named - known)
+assert [label for label, key in parts if key is None],     "nothing in the menu for the parts of the program that are not a bot"
+print("the report dialog offers every bot page and nothing else: %s"
+      % ", ".join(labels))
 
 everything = [s for order in
               (o for _t, o in W.BOT_STEPS.values()) for s in order]

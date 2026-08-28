@@ -15,13 +15,14 @@ import time
 import cv2
 
 import capture
+import userdata
 import vision
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=10)
     ap.add_argument("--interval", type=float, default=0.6)
-    ap.add_argument("--debugdir", default="debug_counters")
+    ap.add_argument("--debugdir", default="debug_explore")
     args = ap.parse_args()
     os.makedirs(args.debugdir, exist_ok=True)
 
@@ -32,7 +33,7 @@ def main():
         print("  %s   fehlt: %s   duenn besetzt: %s"
               % (table, ", ".join(missing) or "nichts", ", ".join(duenn) or "nichts"))
 
-    cap = capture.open_capture()
+    cap = capture.open_for(userdata.adb_mode())
     calib = None
     ok = collections.Counter()
     reasons = collections.Counter()

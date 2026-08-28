@@ -1,9 +1,12 @@
 """
 Build the copy for publishing.
 
-The `templates` and `digits` folders contain crops taken from the game, which is
-third-party material. They do not belong in a published copy. This build leaves
-them out, which makes the setup wizard mandatory, and that is the intent.
+The `templates` and `digits` folders contain crops taken from the game. They
+ship, because the board bots cannot read the screen without them and a fresh
+install has no userdata folder to fall back on: held back, Digital World
+Search was unusable until somebody had sat through the whole setup wizard.
+The wizard is still there and still wins -- a learned image in userdata beats
+a shipped one -- but it is no longer the price of a first run.
 
 Building into an existing folder empties it first, but never touches the
 things that live there in their own right: a `.git` folder, a `.venv`, a
@@ -31,13 +34,27 @@ EXCLUDED_FOLDER_PREFIXES = ["debug"]
 # .venv is the environment install.bat builds. It must never be copied: it
 # is hundreds of megabytes and every path inside it is absolute, so it
 # would not work anywhere but on this machine anyway.
-EXCLUDED_FOLDERS = ["templates", "digits", "userdata", "__pycache__", ".git",
-                    ".venv"]
+# .claude is the tooling's own folder, and worktrees live under it: whole
+# copies of this repository at some earlier state, .git pointer and all.
+# Nothing in it is game content, so the audit at the bottom has no opinion
+# about it -- and a build shipped 127 files of stale duplicate program out
+# of one, in a hidden folder, where nobody would have looked for them.
+# docs is the screenshot folder INSTALL.md used to show. It stays here now:
+# the pictures are of this machine's own windows, they are nobody else's
+# business, and .gitignore holds them back from the repository as well.
+EXCLUDED_FOLDERS = ["userdata", "__pycache__", ".git", ".venv", ".claude",
+                    "docs"]
 # The starter make_shortcut.py writes is local state: it hardcodes the
 # absolute path of the pythonw.exe on the machine that made it. install.bat,
 # which creates it, does ship. Hence names rather than a *.bat rule.
+# codes_issued.csv is the plaintext of every supporter code ever minted, and
+# make_codes.py is what mints them. Neither is dangerous on its own -- a code
+# is only worth anything once its hash is in codes.txt, which ships either way
+# -- but the ledger is the whole pool in the clear, and a build that shipped it
+# would hand out five hundred unlocks in one file. codes.txt itself ships: it
+# is what the program checks against, and the hashes give nothing away.
 EXCLUDED_FILES = ["calib.json", "Start Helpermon.bat", "Start bot.bat",
-                  "Bot starten.bat"]
+                  "Bot starten.bat", "codes_issued.csv", "make_codes.py"]
 EXCLUDED_SUFFIXES = [".pyc", ".png", ".jpg", ".log"]
 
 # Documents ship by whitelist. Everything else ending in .md is internal --
@@ -47,12 +64,11 @@ EXCLUDED_SUFFIXES = [".pyc", ".png", ".jpg", ".log"]
 # requirements.txt and LICENSE.txt are unaffected.
 PUBLIC_DOCS = ["README.md", "QUICKSTART.md", "INSTALL.md", "CONTRIBUTING.md"]
 
-# The one place in the tree where an image may live: the screenshots
-# INSTALL.md shows. They are pictures of Helpermon's own windows and of
-# Windows itself, never of the game screen, and docs/images/READ_ME.txt says
-# so where whoever adds one will read it. Everywhere else the audit below
-# still refuses an image outright.
-IMAGE_FOLDER = os.path.join("docs", "images")
+# The two folders the board bots read the screen with, and now the only
+# place in the tree an image may ship from at all. Their contents are crops
+# from the game and they ship anyway, see the note at the top. Everywhere
+# else the audit below refuses an image outright.
+GAME_IMAGE_FOLDERS = ["templates", "digits"]
 
 # Present in the target and not ours to delete when rebuilding into it. The
 # git repository is the one that matters; the other two are what a player
@@ -62,7 +78,12 @@ KEEP_IN_TARGET = [".git", ".venv", "userdata"]
 # The shipping promise: not one file derived from the game screen. Nothing may
 # ever be included that matches this, no matter what the rules above say.
 FORBIDDEN_SUFFIXES = [".png", ".jpg", ".jpeg", ".bmp"]
-FORBIDDEN_NAMES = ["calib.json"]
+# The second promise, added when the supporter codes were: not one file
+# holding a code in the clear. Named here as well as in EXCLUDED_FILES
+# because that list is a rule and this one is a refusal -- a renamed ledger
+# or a copy left behind by an editor is caught by the shape of the name.
+FORBIDDEN_NAMES = ["calib.json", "codes_issued.csv"]
+FORBIDDEN_FRAGMENTS = ["codes_issued"]
 
 
 def is_excluded_folder(name):
@@ -74,9 +95,11 @@ def is_internal_doc(name):
     return name.lower().endswith(".md") and name not in PUBLIC_DOCS
 
 
-def is_documentation_image(rel):
-    """True for a path inside docs/images, the one folder images may ship from."""
-    return os.path.normpath(rel).startswith(IMAGE_FOLDER + os.sep)
+def is_shipped_image(rel):
+    """True for an image that is allowed out: the templates and digits the
+    bots need, and nothing else."""
+    rel = os.path.normpath(rel)
+    return any(rel.startswith(f + os.sep) for f in GAME_IMAGE_FOLDERS)
 
 
 def clear_target(target):
@@ -111,7 +134,7 @@ def collect():
         for name in files:
             rel = os.path.normpath(os.path.join(rel_root, name))
             by_suffix = (any(name.endswith(e) for e in EXCLUDED_SUFFIXES)
-                         and not is_documentation_image(rel))
+                         and not is_shipped_image(rel))
             if (name in EXCLUDED_FILES
                     or is_internal_doc(name)
                     or by_suffix):
@@ -125,13 +148,32 @@ def audit(included):
     """Return every included file that breaks the no-game-content promise."""
     offenders = []
     for rel in included:
-        if is_documentation_image(rel):
+        if is_shipped_image(rel):
             continue
         name = os.path.basename(rel).lower()
         if (name in FORBIDDEN_NAMES
+                or any(f in name for f in FORBIDDEN_FRAGMENTS)
                 or any(name.endswith(e) for e in FORBIDDEN_SUFFIXES)):
             offenders.append(rel)
     return offenders
+
+
+def inside_source(target):
+    """Would this target write the build into the working copy itself?
+
+    A relative --target is taken from wherever the command was run, which
+    is normally this folder -- and a shell that ate the backslashes out of
+    an absolute Windows path leaves exactly that. "$USERPROFILE/Documents/
+    Helpermon-test" came through as "Aleks/Documents/Helpermon-test" and
+    the whole build landed in a new folder inside the repository, where
+    nothing looks for it and where the *next* build would have shipped all
+    79 files of it: a second, older Helpermon inside the public copy, 161
+    files instead of 82. That has happened once before with the tooling's
+    worktrees, which is one time more than a check this cheap is worth.
+    """
+    here = os.path.realpath(HERE)
+    dest = os.path.realpath(os.path.abspath(target))
+    return dest == here or dest.startswith(here + os.sep)
 
 
 def main():
@@ -140,6 +182,18 @@ def main():
                                                    "helpermon_release"))
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
+
+    if inside_source(args.target):
+        print("STOP: the target is inside the working copy, nothing written")
+        print("   asked for : %s" % args.target)
+        print("   which is  : %s" % os.path.realpath(os.path.abspath(
+            args.target)))
+        print("   inside    : %s" % HERE)
+        print("A build there would be shipped by the next one. Give an "
+              "absolute path outside this folder,")
+        print("with forward slashes: py release.py --target "
+              "C:/Users/you/Documents/Helpermon-test")
+        return 1
 
     included, excluded = collect()
     print("Will be shipped, %d files" % len(included))
@@ -152,15 +206,6 @@ def main():
     if internal:
         print("\nHeld back as internal documents: %s" % ", ".join(internal))
         print("Shipped documents are %s." % ", ".join(PUBLIC_DOCS))
-
-    shots = [n for n in included if is_documentation_image(n)
-             and any(n.lower().endswith(e) for e in FORBIDDEN_SUFFIXES)]
-    if shots:
-        print("\nScreenshots for INSTALL.md, %d of them. The audit lets these"
-              % len(shots))
-        print("through, so they are the one thing here nobody checks but you:")
-        for name in shots:
-            print("   %s" % name)
 
     offenders = audit(included)
     if offenders:
@@ -184,20 +229,12 @@ def main():
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copy2(source, target)
 
-    # Empty placeholders, so it is clear where learned images belong
-    for folder in ("templates", "digits"):
-        path = os.path.join(args.target, folder)
-        os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, "READ_ME.txt"), "w") as fh:
-            fh.write("This folder is empty on purpose.\n\n"
-                     "The images the bots need are learned from your own\n"
-                     "screen. To create them, run\n\n"
-                     "  py setup_wizard.py\n\n"
-                     "What you learn is stored in userdata, not here.\n")
-
     print("\nBuild written to %s" % args.target)
-    print("The setup wizard is mandatory there, no images from the game "
-          "are included.")
+    images = len([n for n in included
+                  if any(os.path.normpath(n).startswith(f + os.sep)
+                         for f in GAME_IMAGE_FOLDERS)])
+    print("%d template and digit images went with it, so the board bots read "
+          "the screen there without the setup wizard." % images)
     return 0
 
 

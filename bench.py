@@ -26,7 +26,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=6)
     args = ap.parse_args()
 
-    cap = capture.open_capture()
+    cap = capture.open_adb()
     print("\nScreenshot per ADB")
     best = None
     for method in ("png", "raw"):
@@ -61,24 +61,22 @@ def main():
     dt, _ = timed(lambda: vision.classify_banner(img, calib), args.rounds)
     print("  Banner pruefen  %6.0f ms" % (dt * 1000))
 
-    print("\nScreenshot per Fensteraufnahme")
+    print("\nScreenshot per Fensteraufnahme, zum Vergleich")
+    print("(braucht ein sichtbares, unverdecktes Fenster -- siehe")
+    print(" PLAN_ADB_ONLY.md dazu, warum die ADB-Seite trotzdem der Standard ist)")
     try:
-        import vision as _v
-        hybrid = capture.open_hybrid(_v.calibrate)
-        if hasattr(hybrid, "window"):
-            dt, wimg = timed(hybrid.grab, args.rounds)
-            print("  fenster %6.0f ms   Bild %d x %d"
-                  % (dt * 1000, wimg.shape[1], wimg.shape[0]))
-            if best:
-                print("  Ersparnis gegenueber ADB: %.0f ms pro Bild"
-                      % ((best[1] - dt) * 1000))
-        else:
-            print("  nicht nutzbar, Fenster nicht gefunden oder verdeckt")
+        win = capture.open_window()
+        dt, wimg = timed(win.grab, args.rounds)
+        print("  fenster %6.0f ms   Bild %d x %d"
+              % (dt * 1000, wimg.shape[1], wimg.shape[0]))
+        if best:
+            print("  Unterschied zu ADB: %.0f ms pro Bild"
+                  % ((best[1] - dt) * 1000))
     except Exception as err:
         print("  nicht nutzbar (%s)" % err)
 
     print("\nEine Aktion braucht 1 Klick, 1 bis 3 Bilder plus Auswertung.")
-    print("Dominieren die Bilder, hilft --capture hybrid und eine kleinere")
+    print("Dominieren die Bilder unter ADB, hilft eine kleinere")
     print("Emulatorauflaesung, zum Beispiel 540 x 960 statt 1080 x 1920.")
 
 

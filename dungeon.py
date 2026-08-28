@@ -1,5 +1,5 @@
 """
-Dungeon bot. Works through the dungeon list in rounds.
+Dungeon bot. Works through the dungeon list once, top half then bottom.
 
 A different bot from the minigame one. That one solves a grid with cost
 arithmetic; this one deals with screens and buttons, so it is a state machine.
@@ -22,13 +22,11 @@ again; the bot resets or stops.
   py dungeon.py --probe          shows what is recognised, clicks nothing
   py dungeon.py                  dry run, plans but does NOT click
   py dungeon.py --go             actually clicks
-  py dungeon.py --go --rounds 3
   py dungeon.py --list-dungeons  short names for --only and --skip
 
 F7 pauses/resumes and F8 aborts globally, even with the emulator window in
-focus instead of this console. Touching the real mouse also pauses on its
-own, and resumes again once it has been still for a few seconds. See
-guard.py. Disable all of that with --no-mouse-guard.
+focus instead of this console. See guard.py. Disable both with
+--no-hotkeys. Moving the mouse no longer pauses anything.
 """
 
 import argparse
@@ -39,6 +37,7 @@ import numpy as np
 
 import capture
 import guard
+import userdata
 import vision
 
 # Device aspect ratio. Used to compute away the emulator window's title bar
@@ -222,12 +221,36 @@ BADGE_H = 0.040
 # fit here, the font is different.
 ZERO_HOLE_MAX = 0.15
 
+# Smallest character in a counter, as a share of the badge crop's height.
+# Measured over nine cards on two frames, and the spread within each kind is
+# under half a percent:
+#
+#   ticket digits   0.269 - 0.279      ticket slash   0.337 - 0.346
+#   ad digits       0.226 - 0.231      ad slash       0.288 - 0.293
+#
+# This used to be 0.28, which falls between the ticket digits and the ad
+# slash -- the worst place there is. It threw away every digit of the counter
+# that matters and kept the slash of the one that does not, so the ticket
+# count read as unreadable on every card and every dungeon was played
+# "unclear, will try it". At 0.20 all four kinds come through; what else
+# comes with them is thrown out by the slash rule below.
+GLYPH_MIN_H = 0.20
+
+# A slash is narrow and clearly taller than the digits beside it. Measured:
+# 71 against 57 in the ticket counter, 60 against 47 in the ad counter, so
+# 1.25 and 1.26 -- the same proportion in both, which is what a font does.
+SLASH_MIN_RATIO = 1.12
+SLASH_MAX_WH = 0.60
+
 # States
 LIST = "liste"
 DIALOG = "dialog"
 DIALOG_PARTY = "dialog_party"
 DIALOG_AD = "dialog_werbung"
-BATTLE = "kampf"
+# What the game is doing while nothing else is: it is an idle game and
+# the party clears stages in the background the whole time. The name is
+# printed straight into the log, so it says that rather than "kampf".
+BATTLE = "battling in stages"
 # Confirmation dialogs with two buttons side by side, cancel on the left,
 # confirm on the right. Two cases are known and both are dangerous.
 #
@@ -369,7 +392,56 @@ def game_rect(img):
     gw, gh = w - left - right, h - top - bottom
     if gw > 0 and gh > 0 and abs(gw / float(gh) - DEVICE_ASPECT) <= CHROME_ASPECT_TOL:
         return _window_space(left, top, gw, gh)
+    fitted = _fitted_game(w, h)
+    if fitted is not None:
+        return _window_space(*fitted)
     return 0, 0, w, h
+
+
+def _fitted_game(w, h):
+    """The game area in a window that has no sidebar, or None.
+
+    The layout above is LDPlayer with its sidebar out: tab bar on top,
+    sidebar on the right, and the game filling the rest exactly. Without the
+    sidebar that arithmetic no longer comes out at the game's aspect, and
+    what used to happen then was that the whole image was used as it came.
+    That works while the window is roughly the shape of the game and drifts
+    the moment it is not: the game is then letterboxed inside the window, and
+    every fraction in this file slides by however wide the bars are.
+
+    It cost the passive helper a session. Resized to 730 x 1389 -- an aspect
+    of 0.5256 where the game wants 0.5625 -- the bars came to 25 pixels top
+    and bottom, the hologram counter slid out of the top of its crop, and
+    every round for two minutes reported that it could not read a number
+    that was plainly on the screen.
+
+    So: take the tab bar off the top, fit the game into what is left keeping
+    its own aspect, and centre it. Checked against the auto button, whose
+    place in the game is known, over eight frames at five window shapes:
+
+        window        this model    top-aligned instead
+        765 x 1390    0 / +2 px     0 / +2 px
+        657 x 1198    0 / +2 px     0 / +2 px
+        651 x 1195    0 / -0 px     0 / -0 px
+        573 x 1056    0 / -0 px     0 / -0 px
+        497 x  914    0 / +2 px     0 / +2 px
+        730 x 1389    0 / +1 px     0 / -25 px
+
+    The last row is the one that decides it: where the window is the wrong
+    shape the bars are real, and they are shared top and bottom.
+    """
+    space = h - WINDOW_CHROME[1]
+    if space <= 0 or w <= 0:
+        return None
+    gw = min(float(w), space * DEVICE_ASPECT)
+    gh = gw / DEVICE_ASPECT
+    # A picture this model would read as mostly border is not a window with a
+    # game in it, and is better used as it comes.
+    if gw < 0.5 * w or gh < 0.5 * h:
+        return None
+    return (int(round((w - gw) / 2.0)),
+            int(round(WINDOW_CHROME[1] + (space - gh) / 2.0)),
+            int(round(gw)), int(round(gh)))
 
 
 def to_pixel(img, fx, fy):
@@ -454,9 +526,54 @@ def badge_glyphs(img, fy, fh=None, scale=4):
     n, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     out = [s for s in stats[1:]
            if s[4] > 200 and 0.15 < s[2] / max(s[3], 1) < 1.2
-           and s[3] > 0.28 * mask.shape[0]]
+           and s[3] > GLYPH_MIN_H * mask.shape[0]]
     out.sort(key=lambda s: s[0])
     return mask, out
+
+
+def group_glyphs(glyphs):
+    """Characters split into counters, by the gap between them.
+
+    A counter reads n/2 and its characters sit close together; a clear gap
+    separates one counter from the next.
+    """
+    if not glyphs:
+        return []
+    groups = [[glyphs[0]]]
+    for before, now in zip(glyphs, glyphs[1:]):
+        gap = now[0] - (before[0] + before[2])
+        if gap > 3 * before[2]:
+            groups.append([now])
+        else:
+            groups[-1].append(now)
+    return groups
+
+
+def counter_digits(group):
+    """The digits of one counter, or None if this group is not a counter.
+
+    The proof is the slash: narrow, and taller than the digits around it. It
+    is what tells a counter from the rest of the artwork in the crop -- the
+    Apocalymon card carries a medal and the word "Rose" in the same strip,
+    and its letters are the height of a digit. They have no slash, so they
+    are not a counter.
+
+    Only what stands to the left of the slash is returned. That is the count;
+    to the right is the daily allowance, which is always two.
+    """
+    if len(group) < 2:
+        return None
+    tallest = max(group, key=lambda g: g[3])
+    others = [g[3] for g in group if g is not tallest]
+    if not others:
+        return None
+    median = sorted(others)[len(others) // 2]
+    if tallest[3] < SLASH_MIN_RATIO * median:
+        return None
+    if tallest[2] / max(tallest[3], 1) > SLASH_MAX_WH:
+        return None
+    left = [g for g in group if g[0] + g[2] <= tallest[0]]
+    return left or None
 
 
 def is_zero_digit(mask, stat):
@@ -468,50 +585,247 @@ def is_zero_digit(mask, stat):
     return float((glyph[9:19, 7:13] > 127).mean()) <= ZERO_HOLE_MAX
 
 
+# How a digit is measured. The glyph is squashed onto a 12 x 16 grid first,
+# so a counter reads the same whatever size the emulator window is -- these
+# very numbers were taken from two windows, 760 x 1310 and 619 x 1059.
+#
+# Deliberately no stored pictures of the digits. They would be images taken
+# from the game, which is the one thing this program does not ship, and it
+# would turn the dungeon bot into a bot that needs setting up. Shapes are
+# described by numbers instead, the way every other threshold here is.
+#
+# Measured on Apocalymon counting down from 46 to 37, which walks the units
+# place through all ten digits, plus the tens place giving 4 and 3:
+#
+#   digit  holes  hole y   ink   top    bottom  right
+#     0      1     0.47    0.49  0.42    0.54    0.64
+#     1      0      -      0.41  0.33    0.88    0.16
+#     2      0      -      0.44  0.50    1.00    0.53
+#     3      0      -      0.45  0.54    0.71    0.67
+#     4      1     0.45    0.41  0.29    0.17    0.58
+#     5      0      -      0.49  0.79    0.67    0.50
+#     6      1     0.63    0.53  0.58    0.58    0.53
+#     7      0      -      0.35  1.00    0.21    0.30
+#     8      2     0.47    0.56  0.58    0.71    0.67
+#     9      1     0.33    0.52  0.50    0.54    0.66
+#
+# The thresholds below sit in the gaps of that table. The two roomiest are
+# the 4, whose bottom is empty at 0.17 against 0.54 for every other one-hole
+# digit, and the 2, whose bottom bar is solid. The tightest are the hole
+# positions that separate 9, 0 and 6, with 0.05 to 0.08 either side; those
+# are the ones to widen first if a digit is ever read wrongly.
+DIGIT_GRID = (12, 16)
+D4_BOTTOM_MAX = 0.35        # 4 against 0, 6, 9
+D9_HOLE_MAX = 0.40          # 9 against 4 and 0
+D6_HOLE_MIN = 0.55          # 6 against 0
+D7_BOTTOM_MAX = 0.35        # 7, the only holeless digit with an empty foot
+D1_RIGHT_MAX = 0.25         # 1, which is empty on its right
+# ...except where the 1 stands on a serif. The quest card's font draws it
+# with a full bar under it, and that bar reaches the right edge: measured
+# on "Defeat 12/50", right came to 0.38 over the whole glyph, sailed past
+# the test above, and the 1 was then read as a 2 on the next line down
+# (bottom 0.92, over D2_BOTTOM_MIN). Six other 1s on the same run of cards
+# measured 0.12 to 0.20 and were read correctly, so this is not a
+# threshold to widen -- 0.38 is a different shape, not a noisier one.
+#
+# What no 1 has, serif or not, is ink on its right *above* the foot.
+# Measured over the rows between the flag and the bar, the last three
+# columns of the grid:
+#
+#   1 (n=7)                     0.00
+#   every other digit (n=65)    0.45 to 0.91
+#
+# So the floor sits at 0.15: three times under the lowest of the others,
+# and above nothing at all, which is what a 1 has there.
+D1_ROWS = (2, 13)
+D1_RIGHT_COLS = 3
+D1_UPPER_RIGHT_MAX = 0.15
+D2_BOTTOM_MIN = 0.85        # 2 against 3 and 5
+
+# 5 against 3, and this one was learned the hard way. It went by the top
+# band first, on the reasoning that the 5 opens with a solid bar while the 3
+# opens with an arc -- 0.79 against 0.54, which looked like room enough. In a
+# live window one size smaller the arc of a 3 filled out to 0.75 and it was
+# read as a 5, so 34 tickets became 54.
+#
+# The row below the top says it far more plainly, and it says it about the
+# shape rather than about how thickly the shape was drawn: under its opening
+# the 5 carries a stem down the left with nothing on the right, and the 3
+# carries its bulge on the right with nothing on the left.
+#
+#   rows 3 to 6      left quarter    right quarter
+#     5                  0.75            0.00
+#     3                  0.00            0.85
+#
+# So the test is which flank is heavier, and the gap is the whole width of
+# the glyph rather than a tenth of a measurement.
+D53_ROWS = (3, 7)
+
+
+def digit_bitmap(mask, stat):
+    """The glyph on a fixed grid, so its size no longer matters."""
+    glyph = mask[stat[1]:stat[1] + stat[3], stat[0]:stat[0] + stat[2]]
+    if glyph.size == 0:
+        return None
+    return cv2.resize(glyph, DIGIT_GRID,
+                      interpolation=cv2.INTER_AREA) > 127
+
+
+def _holes(bits):
+    """Enclosed background areas, and how far down each one sits."""
+    padded = np.pad((~bits).astype(np.uint8), 1, constant_values=1)
+    count, labels = cv2.connectedComponents(padded, 4)
+    found = []
+    for k in range(1, count):
+        ys, xs = np.where(labels == k)
+        if (0 in ys or 0 in xs
+                or labels.shape[0] - 1 in ys or labels.shape[1] - 1 in xs):
+            continue                      # that one is the world outside
+        found.append(ys.mean() / labels.shape[0])
+    return found
+
+
+def read_digit(mask, stat):
+    """Which digit this is, or None if it does not look like one.
+
+    Holes first, because they split the ten into three groups that no
+    amount of ink measuring separates as cleanly.
+    """
+    bits = digit_bitmap(mask, stat)
+    if bits is None:
+        return None
+    holes = _holes(bits)
+    bottom = float(bits[-2:].mean())
+    right = float(bits[:, -4:].mean())
+
+    if len(holes) >= 2:
+        return 8
+    if len(holes) == 1:
+        if bottom < D4_BOTTOM_MAX:
+            return 4
+        if holes[0] < D9_HOLE_MAX:
+            return 9
+        if holes[0] > D6_HOLE_MIN:
+            return 6
+        return 0
+    if bottom < D7_BOTTOM_MAX:
+        return 7
+    if right < D1_RIGHT_MAX             or float(bits[D1_ROWS[0]:D1_ROWS[1], -D1_RIGHT_COLS:].mean())             < D1_UPPER_RIGHT_MAX:
+        return 1
+    if bottom >= D2_BOTTOM_MIN:
+        return 2
+    band = bits[D53_ROWS[0]:D53_ROWS[1]]
+    return 5 if band[:, :4].mean() > band[:, -4:].mean() else 3
+
+
+def read_counter(mask, digits):
+    """The number a counter shows, or None if any digit was unreadable.
+
+    All or nothing on purpose. Half a number is worse than no number: 4 read
+    out of 46 would have the bot stop after four attempts and call the card
+    empty.
+    """
+    if not digits:
+        return None
+    value = 0
+    for stat in digits:
+        one = read_digit(mask, stat)
+        if one is None:
+            return None
+        value = value * 10 + one
+    return value
+
+
+def card_counters(img, fy, fh=None):
+    """The counters on a list card: the mask, and one digit list per counter.
+
+    First the tickets, then the ads if the card has them. Apocalymon has only
+    the one.
+    """
+    mask, glyphs = badge_glyphs(img, fy, fh)
+    if mask is None or not glyphs:
+        return None, []
+    found = [digits for digits in
+             (counter_digits(g) for g in group_glyphs(glyphs)) if digits]
+    return mask, found
+
+
+# The daily allowance, the number after the slash on both counters. The
+# game resets two tickets a day and allows two watched ads a day.
+DAILY_ALLOWANCE = 2
+
+
+def card_budget(img, fy, fh=None):
+    """How many attempts this card can still yield today.
+
+    Both counters count down, and both say what is left. 46/2 is forty-six
+    tickets in hand, with two more arriving each day; 0/2 on the film symbol
+    is no ads left today, out of the two a day gives.
+
+    The film symbol is drawn only while the ticket counter reads 0/2.
+    Confirmed both ways: it appears once tickets first run out, and it
+    disappears again the moment tickets are above zero for any reason --
+    including a repurchase, and regardless of how many ads the symbol had
+    been showing right before the purchase. So a card with tickets left
+    carries one counter, full stop, and that says nothing whatever about
+    its ads: reading the missing symbol as "no ads" is a conclusion the
+    card does not support, and it would have the bot stop as the last
+    ticket went and walk away from two free attempts. Ads are unknown
+    whenever tickets are not at zero.
+
+    Hence the three shapes an answer can have:
+
+      tickets  > 0, (no film symbol, it is hidden while this holds) ->
+                    ads unknown, total unknown, at least that many tickets
+      tickets == 0, film symbol N  -> N, and that is all there is
+      tickets == 0, no film symbol -> 0, this card has no ads to give
+
+    A total of None means "play it, and find out inside". Only a total of 0
+    lets a card be skipped without opening it.
+    """
+    mask, counters = card_counters(img, fy, fh)
+    if not counters:
+        return {"tickets": None, "ads": None, "total": None}
+
+    tickets = read_counter(mask, counters[0])
+    ads = read_counter(mask, counters[1]) if len(counters) > 1 else None
+
+    if tickets is None:
+        total = None
+    elif ads is not None:
+        # Observed only at tickets == 0, per the rule above -- the symbol
+        # hides itself otherwise -- but added rather than assumed to be
+        # zero, in case that ever stops holding.
+        total = tickets + ads
+    elif tickets == 0:
+        # Tickets gone and still no film symbol: this card has no ads.
+        total = 0
+    else:
+        # Tickets left, so the symbol is hidden and the ads behind it
+        # cannot be counted. Unknown, not zero.
+        total = None
+    return {"tickets": tickets, "ads": ads, "total": total}
+
+
 def card_has_attempts(img, fy, fh=None):
     """Does this list card still have attempts left?
 
-    Only reads whether a counter's leading digit is a zero. The card has
-    either one counter, the tickets, or two, with the ad counter added. It is
-    playable if at least one of the two is not at zero.
+    Reads whether the ticket counter's leading digit is a zero. Three
+    outcomes: tickets present means play, tickets at 0 with no ad counter
+    means safe to skip, tickets at 0 with an ad counter means unclear and
+    gets tried. The third case costs one open-and-close, after which the bot
+    remembers the outcome.
 
     Returns None if nothing could be read. The card is then played to be
     safe, not skipped.
     """
-    mask, digits = badge_glyphs(img, fy, fh)
-    if mask is None or not digits:
+    mask, counters = card_counters(img, fy, fh)
+    if not counters:
         return None
-    # Group characters into counters by gap, not by fixed position. A counter
-    # looks like n/2, its characters sit close together, while a clear gap
-    # separates two counters.
-    groups = [[digits[0]]]
-    for before, jetzt in zip(digits, digits[1:]):
-        gap = jetzt[0] - (before[0] + before[2])
-        if gap > 3 * before[2]:
-            groups.append([jetzt])
-        else:
-            groups[-1].append(jetzt)
-
-    # Only the ticket counter, the first group, is evaluated.
-    #
-    # The ad counter next to it sits on the artwork rather than in a dark
-    # box. Its digits merge with the background under thresholding, no
-    # threshold from 150 to 215 captured them cleanly. Measured right next to
-    # the slash, the hole value is 0.20 for the zero against 0.57 for the
-    # two. That does separate them, but with only 0.05 of margin to the
-    # threshold, and a wrong call would cost a whole dungeon per day. So it
-    # is deliberately not read.
-    #
-    # Consequence, three outcomes. Tickets present means play, tickets at 0
-    # with no ad counter means safe to skip, tickets at 0 with an ad counter
-    # means unclear and gets tried. The third case costs one open-and-close,
-    # after which the bot remembers the outcome.
-    digits = [s for s in groups[0] if s[2] / max(s[3], 1) > 0.55]
-    if not digits:
-        return None
-    if not is_zero_digit(mask, digits[0]):
+    tickets = counters[0]
+    if not is_zero_digit(mask, tickets[0]):
         return True
-    return None if len(groups) > 1 else False
+    return None if len(counters) > 1 else False
 
 
 def confirm_kind(img, ok_button):
@@ -585,12 +899,18 @@ CHANGED_SHARE = 0.01
 # Not "how many taps did nothing": taps during a load do nothing by
 # definition, and counting them is what aborted three good runs. A screen
 # that has not altered one pixel in this long really is stuck.
-FREEZE_WINDOW = 25.0
+#
+# Raised from 25 s after a live run gave up here with the loading bar shown
+# nearly full -- a load can sit still for a stretch even this close to the
+# end, and that is not yet the same thing as being stuck.
+FREEZE_WINDOW = 45.0
 FREEZE_SHARE = 0.0002
 # How long to wait for a moving screen to settle before tapping it anyway.
 # Without this an idle animation on the main screen would be waited on for
-# ever.
-MOVING_PATIENCE = 8.0
+# ever. Raised alongside FREEZE_WINDOW, for the same reason: a loading bar
+# still visibly filling should not get tapped at just because 8 s have
+# passed.
+MOVING_PATIENCE = 20.0
 # Least time between two taps while waking the game up. The menus need a
 # moment to react and a burst of clicks arrives before any of them has been
 # drawn, which reads as "nothing is happening" and starts the loop guessing.
@@ -688,6 +1008,32 @@ STAGE_FAILED_RED = 0.02
 STAGE_FAILED_HUE = ((0, 120, 120), (8, 255, 255),
                     (170, 120, 120), (179, 255, 255))
 
+# Red in that band is necessary and is not sufficient, which cost a whole
+# feature a run. The stage the player was on, Binary Road, is drawn on a red
+# grid: the band measured 0.484 red, twenty-four times the threshold, and the
+# passive helper concluded the banner was up and did nothing at all -- for as
+# long as that stage lasted. Two other frames say the same in the other
+# direction: a dungeon card's artwork scores 0.069 and an orange cave 0.063,
+# both above 0.02 and neither a banner.
+#
+# What the banner has and none of them do is a white outline around the
+# letters, which is how this game draws every headline. Measured as the share
+# of the band that is red with white within two pixels of it:
+#
+#   the banner                          0.0236
+#   the red stage that broke it         0.0037
+#   a dungeon card's red artwork        0.0001
+#   an orange cave                      0.0000
+#   every ordinary main screen          0.0000 to 0.0002
+#
+# 0.010 sits a factor of two under the banner and a factor of nearly three
+# over the worst impostor. And the two ways of being wrong do not cost the
+# same: missing a banner costs one tap, which is what dismisses it anyway,
+# while seeing one that is not there stops everything until the screen
+# changes. So this test is meant to lean towards "not a banner".
+STAGE_FAILED_WHITE = ((0, 0, 200), (179, 60, 255))
+STAGE_FAILED_HALO = 0.010
+
 # Its own blue range, a little wider than BLUE: this is an icon, not one of
 # the flat buttons BLUE was measured on, and its disc is shaded.
 AUTO_BLUE = ((95, 120, 120), (115, 255, 255))
@@ -700,9 +1046,12 @@ AUTO_FILL_MIN = 0.65
 def stage_failed(img):
     """Is the red Stage Failed banner up?
 
-    Red and not text: reading the words would be text recognition, which
-    this bot does without so that it works in every language. The banner is
-    the only thing that paints that much saturated red across the top.
+    Red letters, and not the words themselves: reading those would be text
+    recognition, which this bot does without so that it works in every
+    language. What is measured is the shape of how the game draws a
+    headline -- saturated red with a white outline around it -- because red
+    alone is also a red stage, a red card and a red cave. See the numbers
+    above STAGE_FAILED_HALO.
     """
     x0, y0, gw, gh = game_rect(img)
     # Clamped, because on an ADB frame the reference rect starts above and
@@ -717,8 +1066,15 @@ def stage_failed(img):
                       np.array(STAGE_FAILED_HUE[1]))
     high = cv2.inRange(hsv, np.array(STAGE_FAILED_HUE[2]),
                        np.array(STAGE_FAILED_HUE[3]))
-    share = float(np.count_nonzero(low | high)) / low.size
-    return share >= STAGE_FAILED_RED
+    red = low | high
+    if float(np.count_nonzero(red)) / red.size < STAGE_FAILED_RED:
+        return False
+    # Red letters, not a red picture: the outline is the difference.
+    white = cv2.inRange(hsv, np.array(STAGE_FAILED_WHITE[0]),
+                        np.array(STAGE_FAILED_WHITE[1]))
+    near = cv2.dilate(white, np.ones((5, 5), np.uint8))
+    halo = float(np.count_nonzero(cv2.bitwise_and(red, near))) / red.size
+    return halo >= STAGE_FAILED_HALO
 
 
 def auto_button(img):
@@ -749,6 +1105,89 @@ def auto_button(img):
         if not AUTO_ASPECT[0] <= w / float(h) <= AUTO_ASPECT[1]:
             continue
         if area / float(w * h) < AUTO_FILL_MIN:
+            continue
+        return {"fx": (left + x + w / 2.0 - x0) / gw,
+                "fy": (top + y + h / 2.0 - y0) / gh,
+                "fw": fw, "fh": h / float(gh)}
+    return None
+
+
+# The home button: the globe in the middle of the bottom nav bar, and the way
+# back to the main screen from every screen that bar is drawn on. That is the
+# catch, and it is the reason go_home walks back to the list first -- the bar
+# belongs to the list side of the game and is not drawn over a dungeon panel,
+# a battle or a dialog.
+#
+# Found by its glyph, not by its position: the white wireframe globe inside
+# the disc. Measured over 49 real frames -- window frames 497 to 805 wide and
+# ADB frames of 1080 x 1920, both frame shapes of the same scene -- as shares
+# of the reference window:
+#
+#   the globe        fw 0.0473 to 0.0501   aspect 0.96 to 1.03   fill 0.42 to 0.49
+#   next widest white thing in that crop, over every frame there is:
+#     a tab's label edge          fw 0.0155
+#     a white panel across the bar, on a loading screen or with Special
+#     Summon open over the game    fw 0.125, fill 1.00
+#
+# So the width band below keeps 15 % clear of the globe at either end and
+# still leaves a factor of two either way to the nearest wrong thing, and
+# fill throws out the solid white panel that width alone would have to argue
+# with. Exactly one blob passed on each of the 49 frames, none on any other.
+#
+# It does the same second job auto_button does: the game dims what is behind
+# a dialog, and the dimmed globe leaves the white range entirely -- measured
+# on a frame with the leave prompt up, no white blob at all in that crop. So
+# a globe found is evidence of both things a caller needs, where to tap and
+# that nothing is covering it.
+#
+# The button's own centre measures 0.481, 0.945, which is 0.104 to the right
+# of NAV_DUNGEON and a little higher, as the bar is drawn. It is written down
+# here for the record only: what gets tapped is the glyph that was found.
+HOME_BAND = (0.41, 0.555, 0.905, 0.985)
+HOME_WHITE = ((0, 0, 200), (179, 60, 255))
+HOME_W = (0.038, 0.062)
+HOME_ASPECT = (0.80, 1.25)
+HOME_FILL = (0.30, 0.70)
+
+# How hard go_home tries. One press is all it takes from the list, and the
+# second is there because a press sent into an animation is swallowed -- the
+# same reason summon.py caps its way out at four. Three is that with a spare;
+# past it, whatever is on screen is not what this bot takes it for, and more
+# presses into it would be the blind clicking CLAUDE.md warns about. The
+# rounds are the looking, and there are more of them than presses because a
+# round that finds no bar spends itself waiting rather than tapping.
+HOME_PRESSES_MAX = 3
+HOME_ROUNDS = 6
+
+
+def home_button(img):
+    """The home button in the bottom nav bar, or None if it is not plainly there.
+
+    None also answers "is the nav bar in front and undimmed", for the same
+    reason auto_button answers it: see the numbers above.
+    """
+    x0, y0, gw, gh = game_rect(img)
+    fx0, fx1, fy0, fy1 = HOME_BAND
+    # Clamped: on an ADB frame the reference rect starts above and left of
+    # the image, and a negative index would wrap to the far edge.
+    left = max(0, int(x0 + fx0 * gw))
+    top = max(0, int(y0 + fy0 * gh))
+    sub = img[top:int(y0 + fy1 * gh), left:int(x0 + fx1 * gw)]
+    if sub.size == 0:
+        return None
+    mask = cv2.inRange(cv2.cvtColor(sub, cv2.COLOR_BGR2HSV),
+                       np.array(HOME_WHITE[0]), np.array(HOME_WHITE[1]))
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if not h:
+            continue
+        fw = w / float(gw)
+        if not HOME_W[0] <= fw <= HOME_W[1]:
+            continue
+        if not HOME_ASPECT[0] <= w / float(h) <= HOME_ASPECT[1]:
+            continue
+        if not HOME_FILL[0] <= area / float(w * h) <= HOME_FILL[1]:
             continue
         return {"fx": (left + x + w / 2.0 - x0) / gw,
                 "fy": (top + y + h / 2.0 - y0) / gh,
@@ -866,7 +1305,7 @@ class DungeonBot:
                  use_ads=True, battle_timeout=90.0, tick=1.0, max_minutes=0,
                  max_attempts=6, max_ads=2, min_battle=6.0, swipes=1,
                  survey_first=True, patience=1.5, only=None, skip=None,
-                 debugdir="debug_dungeon"):
+                 budgets=None, debugdir="debug_dungeon"):
         self.cap = cap
         self.max_minutes = max_minutes
         self.deadline = None
@@ -883,14 +1322,28 @@ class DungeonBot:
         self.use_ads = use_ads
         self.battle_timeout = battle_timeout
         self.tick = tick
-        self.stats = {"versuche": 0, "kaempfe": 0, "werbung": 0,
-                      "uebersprungen": 0, "unklar": 0, "abgelehnt": 0,
-                      "exit_abgefangen": 0}
+        self.stats = {"attempts": 0, "fights": 0, "ads": 0,
+                      "skipped": 0, "unknown": 0, "declined": 0,
+                      "exit_caught": 0, "not_selected": 0}
         self.control = guard.Stop()
-        # The bot does not read the ticket count. Instead it detects from
-        # elapsed time whether a battle really happened. A battle takes 7 to
-        # 40 seconds. If the dialog returns faster, nothing happened, so
-        # attempts are used up.
+        # What the last survey read off each card, so the attempt loop does
+        # not have to read it a second time from inside the panel, where the
+        # counter is not visible anyway.
+        self.counted = {}
+        # Attempts already spent per dungeon, across the whole run. The
+        # number the player sets is a budget for the run; asked once per
+        # round it handed Apocalymon its single attempt again in round two,
+        # and again in round three.
+        self.spent = {}
+        # How many attempts the player allows per dungeon, by position in
+        # the list. Empty means the old behaviour, max_attempts for every
+        # one of them. A dungeon set to 0 is not played at all -- that is
+        # what the checkbox used to say.
+        self.budgets = dict(budgets or {})
+        # The ceiling when nothing was read from the card. Elapsed time still
+        # decides whether a battle really happened: a battle takes 7 to 40
+        # seconds, and a dialog returning faster than that means nothing
+        # happened.
         self.max_attempts = max_attempts
         # Battles measured take about 20 seconds, short ones about 7. Below
         # this threshold it was not a battle but a rejection.
@@ -933,31 +1386,17 @@ class DungeonBot:
     def _device_size(self):
         """Reference frame for clicks: its origin and its size.
 
-        Clicks and frames do not always come from the same picture. In hybrid
-        mode the frames are window captures while the clicks go out through
-        ADB in device pixels, so the reference has to be taken from the
-        device, not from the frame the bot happens to be looking at.
-
-        What comes back is the window the game sits in, expressed in the
-        pixels of whatever receives the clicks -- so it is wider than the
-        device screen and starts above and left of it. game_rect explains
-        why. Every fx/fy in this file then lands on the same spot whichever
-        source is in use.
+        game_rect turns whichever picture comes back -- a device frame or a
+        window frame -- into the same reference frame, so this needs only
+        the one frame the bot is looking at anyway. It used to reach
+        through to a HybridCapture's own AdbCapture for a second frame from
+        the click side specifically; that mixed mode is gone, image and
+        click always come from the same source now.
         """
-        img = None
-        adb = getattr(self.cap, "adb", None)
-        # HybridCapture holds an AdbCapture here; AdbCapture holds the path
-        # to adb.exe under the same name, and that has no frames to give.
-        if hasattr(adb, "grab"):
-            try:
-                img = adb.grab()
-            except Exception:
-                img = None
-        if img is None:
-            try:
-                img = self.cap.grab()
-            except Exception:
-                return (0, 0), (1080, 1920)
+        try:
+            img = self.cap.grab()
+        except Exception:
+            return (0, 0), (1080, 1920)
         x0, y0, gw, gh = game_rect(img)
         return (x0, y0), (gw, gh)
 
@@ -1119,7 +1558,7 @@ class DungeonBot:
             return
         ok = info["exit_ok"]
         kind = info.get("exit_kind", "beenden")
-        self.stats["exit_abgefangen"] += 1
+        self.stats["exit_caught"] += 1
         if kind == "party" and leaving_dungeon:
             self.log("  leaving the dungeon via OK, back to the list")
             self.tap(ok["fx"], ok["fy"], was="OK, Party verlassen")
@@ -1496,6 +1935,70 @@ class DungeonBot:
         self.log("  could not find the way back to the list")
         return False
 
+    def go_home(self, rounds=HOME_ROUNDS):
+        """Leave the game on its main screen. True if it is showing.
+
+        Called from run's finally, so it happens on every way out and not
+        only the good one: a run that never found the list, one cut short by
+        the Stop button, one that threw. Each of those used to leave the game
+        wherever it stood -- a dungeon panel, a card, a rewards dialog -- and
+        the next thing started then met a screen it did not expect.
+
+        Two things it deliberately does not do. It is not gated on the pause
+        or stop flag: by the time this runs that flag is usually already set,
+        that being one of the ways a run ends, and a gate would skip the one
+        step whose whole point is where the game is left. It is bounded
+        instead. And it never taps a position -- the nav bar is drawn only on
+        the list side of the game, so if the globe is not on the frame the
+        answer is to get back to the list and look again, not to tap where it
+        would have been.
+
+        What it checks after pressing is auto_button, not "the globe is gone":
+        independent evidence that the main screen is in front and clear.
+        """
+        pressed, went_back = 0, False
+        try:
+            for _ in range(rounds):
+                img = self.grab()
+                if auto_button(img) is not None:
+                    if pressed:
+                        self.log("back on the main screen")
+                    return True
+                button = home_button(img)
+                if button is None:
+                    # No bar on this frame: either something is still open
+                    # over it, or it is dimmed by a dialog. return_to_list
+                    # is the bot's own way out of both, and it is worth one
+                    # go, not one per round.
+                    if not went_back:
+                        went_back = True
+                        self.log("\nnot on a screen with the nav bar, "
+                                 "going back to the list first")
+                        self.return_to_list()
+                        continue
+                    time.sleep(self.pause_long)
+                    continue
+                if pressed >= HOME_PRESSES_MAX:
+                    break
+                if not pressed:
+                    self.log("\npressing the home button")
+                self.tap(button["fx"], button["fy"], was="home button")
+                pressed += 1
+                if self.dry_run:
+                    # Nothing was clicked, so nothing will change. Sitting
+                    # out the rest would report a failure that never happened.
+                    return False
+                time.sleep(self.pause_long)
+            self.log("could not get back to the main screen -- the game is "
+                     "left where it stands")
+            self.save_unknown(self.grab(), "no_way_home")
+        except Exception as err:
+            # This runs in a finally. A run that ended because the capture
+            # died would otherwise end with this error instead of its own,
+            # and the real one is the one worth reading.
+            self.log("the way home failed: %s" % err)
+        return False
+
     def save_unknown(self, img, tag):
         """Save an unknown screen once, so it can be reproduced later.
         Capped, so a long run does not fill the disk."""
@@ -1508,6 +2011,28 @@ class DungeonBot:
         self._saved += 1
         self.log("  unknown screen saved: %s" % path)
         return path
+
+    def dump_badge(self, img, fy, fh, name):
+        """Write out one card's counter strip, with what was read from it.
+
+        Only when DGUP_DUMP_BADGES is set. A counter misread live cannot be
+        chased with a screenshot taken by hand: what matters is the frame
+        the bot itself had, at the moment it had it, at whatever size the
+        window happened to be.
+        """
+        import os
+        if not os.environ.get("DGUP_DUMP_BADGES"):
+            return
+        os.makedirs(self.debugdir, exist_ok=True)
+        crop = badge_crop(img, fy, fh)
+        if crop.size == 0:
+            return
+        safe = "".join(c if c.isalnum() else "_" for c in name)[:24]
+        budget = card_budget(img, fy, fh)
+        path = os.path.join(self.debugdir, "badge_%s_%s_%s.png"
+                            % (safe, budget["tickets"], budget["ads"]))
+        cv2.imwrite(path, crop)
+        self.log("    badge written: %s" % path)
 
     def global_index(self, index, label):
         """Number within the overall list, regardless of whether counting is
@@ -1523,6 +2048,18 @@ class DungeonBot:
             return pos in self.only
         return pos not in self.skip
 
+    def attempts_for(self, index, label):
+        """Attempts this dungeon has left, of what the player allowed."""
+        pos = self.global_index(index, label)
+        allowed = self.budgets.get(pos, self.max_attempts)
+        return max(0, allowed - self.spent.get(pos, 0))
+
+    def note_spent(self, index, label, count):
+        """Book what a visit used, so the next round knows about it."""
+        if count:
+            pos = self.global_index(index, label)
+            self.spent[pos] = self.spent.get(pos, 0) + count
+
     def label_of(self, index, label):
         """Name instead of card number, for the log only. The bot itself
         keeps counting cards; reading names would be text recognition and
@@ -1537,11 +2074,15 @@ class DungeonBot:
         closing per dungeon. The Attempt button is not a reliable witness
         anyway, it is visible even at 0 tickets.
 
-        Only reads whether the ticket counter's leading digit is a zero. The
-        ad counter next to it is drawn more faintly and not reliably
-        readable, measured Bakemon at 2/2 and at 0/2 ads yield the same
-        characters. So the rule is: tickets at 0 with a second counter
-        present means unclear, and unclear gets tried rather than skipped.
+        Both counters are read, and what comes out is the number of attempts
+        the card can still yield today: tickets plus the ads not yet
+        watched. A card at zero is skipped without being opened, which is
+        what this pass is for -- before the counters could be read, every
+        card answered "unclear" and was opened and closed for nothing.
+
+        A card whose counters cannot be read is still played. Unreadable is
+        not the same as empty, and the loop inside the panel stops on its own
+        when the attempts run out.
         """
         playable = []
         # Not self.grab(): this runs right after a scroll.
@@ -1551,25 +2092,45 @@ class DungeonBot:
                 break
             if not self.is_selected(index, label):
                 self.log("  %-22s not selected" % self.label_of(index, label))
-                self.stats["abgewaehlt"] += 1
+                self.stats["not_selected"] += 1
                 continue
             if (label, index) in self.exhausted:
                 self.log("  %-22s already exhausted this session"
                          % self.label_of(index, label))
                 continue
+            if self.attempts_for(index, label) <= 0:
+                self.log("  %-22s had its %d, done"
+                         % (self.label_of(index, label),
+                            self.spent.get(self.global_index(index, label), 0)))
+                continue
             cards = list_cards(img, with_size=True)
             if index >= len(cards):
                 continue
             fy, fh = cards[index]
-            available = card_has_attempts(img, fy, fh)
-            if available is False:
-                reason = "tickets at 0 and no ads"
-            elif available is None:
+            budget = card_budget(img, fy, fh)
+            self.dump_badge(img, fy, fh, self.label_of(index, label))
+            allowed = self.attempts_for(index, label)
+            self.counted[(label, index)] = budget
+
+            if budget["total"] == 0:
+                reason = "nothing left today"
+            elif budget["total"] is not None:
                 playable.append(index)
-                reason = "unclear, will try it"
+                # Both numbers, because they answer different questions: what
+                # the game still owes, and what the player allowed.
+                reason = ("%d tickets and %d ad%s, %d possible, playing %d"
+                          % (budget["tickets"], budget["ads"],
+                             "" if budget["ads"] == 1 else "s",
+                             budget["total"],
+                             min(budget["total"], allowed)))
+            elif budget["tickets"]:
+                playable.append(index)
+                # The ads are behind a symbol the game has not drawn yet.
+                reason = ("%d tickets, ads unknown until they run out, "
+                          "playing up to %d" % (budget["tickets"], allowed))
             else:
                 playable.append(index)
-                reason = "tickets available"
+                reason = "counters unreadable, will try it"
             self.log("  %-22s %s" % (self.label_of(index, label), reason))
         return playable
 
@@ -1586,7 +2147,7 @@ class DungeonBot:
         info = recognise(img)
         if not self.dry_run and info["state"] != LIST:
             self.log("  not in the list, state %s" % info["state"])
-            self.stats["unklar"] += 1
+            self.stats["unknown"] += 1
             self.save_unknown(img, "keine_liste")
             if not self.return_to_list():
                 return
@@ -1597,12 +2158,28 @@ class DungeonBot:
         if index >= len(cards):
             self.log("  %s not visible, %d cards recognised"
                      % (self.label_of(index, label), len(cards)))
-            self.stats["uebersprungen"] += 1
+            self.stats["skipped"] += 1
             return
         self.tap(CARD_X, cards[index], was=self.label_of(index, label))
         if self.dry_run:
             return
         time.sleep(self.pause_short)
+
+        # Two ceilings, and the lower one wins. The player's number says how
+        # much of this dungeon they want played; the counted one says how
+        # much the game will actually hand out. Neither is known to the
+        # other, and either can be the smaller.
+        allowed = self.attempts_for(index, label)
+        counted = self.counted.get((label, index)) or {}
+        limit = allowed
+        if counted.get("total") is not None:
+            limit = min(allowed, counted["total"])
+        # Ads likewise: what the card says is left, or the old blanket cap
+        # when the counter could not be read.
+        ad_limit = self.max_ads if counted.get("ads") is None else counted["ads"]
+        if limit != allowed or ad_limit != self.max_ads:
+            self.log("  playing at most %d (allowed %d, counted %s), ads %d"
+                     % (limit, allowed, counted.get("total"), ad_limit))
 
         attempts_done = 0
         ads_used = 0
@@ -1693,16 +2270,15 @@ class DungeonBot:
                 continue
 
             if info["attempt"]:
-                if attempts_done >= self.max_attempts:
-                    self.log("  hit the limit of %d attempts"
-                             % self.max_attempts)
+                if attempts_done >= limit:
+                    self.log("  played %d, which is the limit" % limit)
                     break
                 self.log("  attempt %d" % (attempts_done + 1))
                 t0 = time.time()
                 self.tap(info["attempt"]["fx"], info["attempt"]["fy"],
                          was="Attempt")
                 attempts_done += 1
-                self.stats["versuche"] += 1
+                self.stats["attempts"] += 1
                 if self.wait_dialog_gone(self.start_timeout):
                     if self.wait_dialog_back(self.battle_timeout):
                         duration = time.time() - t0
@@ -1712,16 +2288,16 @@ class DungeonBot:
                             # count it as a battle, otherwise six missed
                             # clicks would look like six battles in the log.
                             self.log("  only %.0f s, that was no battle" % duration)
-                            self.stats["abgelehnt"] += 1
+                            self.stats["declined"] += 1
                             break
-                        self.stats["kaempfe"] += 1
+                        self.stats["fights"] += 1
                         self.log("  battle finished after %.0f s" % duration)
                     continue
                 # The dialog stayed open. Either rejected, or the click fell
                 # inside an animation. The next pass will show which of the
                 # two, since then the ad button appears instead of Attempt.
                 self.log("  attempt had no effect")
-                self.stats["abgelehnt"] += 1
+                self.stats["declined"] += 1
                 if attempts_done >= 2:
                     break
                 continue
@@ -1738,15 +2314,14 @@ class DungeonBot:
                     self.log("  ads no longer yield a ticket, moving on")
                     self.exhausted.add(key)
                     break
-                if ads_used >= self.max_ads:
-                    self.log("  hit the limit of %d ads"
-                             % self.max_ads)
+                if ads_used >= ad_limit:
+                    self.log("  no ads left, %d watched" % ads_used)
                     self.exhausted.add(key)
                     break
                 self.log("  attempts empty, watching an ad")
                 self.tap(info["ad"]["fx"], info["ad"]["fy"], was="Werbung")
                 ads_used += 1
-                self.stats["werbung"] += 1
+                self.stats["ads"] += 1
                 expect_ticket = True
                 time.sleep(self.pause_long)
                 continue
@@ -1756,6 +2331,7 @@ class DungeonBot:
 
         if steps >= self.max_loops:
             self.log("  loop limit reached, moving on")
+        self.note_spent(index, label, attempts_done)
         self.return_to_list()
 
     def wait_dialog_gone(self, timeout=8.0):
@@ -1912,60 +2488,96 @@ class DungeonBot:
         self.log("time limit of %d minutes reached" % self.max_minutes)
         return False
 
-    def run(self, rounds=1):
-        """Round-robin. Each round goes through the list once, completely.
+    def run(self):
+        """One pass through the list, top half then bottom half.
 
-        A lost dungeon comes up again next round. That way, an endlessly
-        repeated loss does not mean the bot gets stuck on one battle and
-        never reaches the others.
+        It used to go round and round. The idea was that a lost battle would
+        come up again next time instead of the bot getting stuck on it -- but
+        this routine has no lost battles to retry: it spends attempts, and an
+        attempt spent is spent whatever the outcome. What the rounds actually
+        produced was a dungeon set to one attempt being handed one more in
+        every round.
+
+        How much each dungeon gets is the number beside it, and the panel
+        loop plays that number in the one visit. There is nothing a second
+        pass could add.
         """
+        try:
+            self._play()
+        finally:
+            self.go_home()
+        return self.stats
+
+    def _play(self):
+        """One pass through the list. run wraps this, see there."""
         if not self.open_list():
-            return self.stats
+            return
         play_from_top, play_from_bottom = self.plan()
         if self.dry_run:
             self.log("Note: a dry run does not scroll, so the plan is based on "
                      "whatever view is showing and may be off.")
 
-        for round_no in range(rounds):
+        top_list = [i for i in range(play_from_top) if self.is_selected(i, "oben")]
+        bottom_list = [i for i in range(play_from_bottom) if self.is_selected(i, "unten")]
+        if self.survey_first:
+            self.log("\nPre-check: which dungeons still have attempts")
+            self.scroll_top()
+            top_list = self.survey(top_list, "oben")
+            self.scroll_bottom()
+            bottom_list = self.survey(bottom_list, "unten")
+            self.log("Playable, top %s, bottom %s"
+                     % ([i + 1 for i in top_list] or "none",
+                        [i + 1 for i in bottom_list] or "none"))
+            self.stats["skipped"] += (play_from_top - len(top_list)
+                                            + play_from_bottom - len(bottom_list))
+            if not top_list and not bottom_list:
+                self.log("nothing left to collect")
+                return
+
+        self.scroll_top()
+        for index in top_list:
             if not self._time_left():
                 break
-            self.log("\n=== Round %d of %d" % (round_no + 1, rounds))
-
-            top_list = [i for i in range(play_from_top) if self.is_selected(i, "oben")]
-            bottom_list = [i for i in range(play_from_bottom) if self.is_selected(i, "unten")]
-            if self.survey_first:
-                self.log("\nPre-check: which dungeons still have attempts")
-                self.scroll_top()
-                top_list = self.survey(top_list, "oben")
-                self.scroll_bottom()
-                bottom_list = self.survey(bottom_list, "unten")
-                self.log("Playable, top %s, bottom %s"
-                         % ([i + 1 for i in top_list] or "none",
-                            [i + 1 for i in bottom_list] or "none"))
-                self.stats["uebersprungen"] += (play_from_top - len(top_list)
-                                                + play_from_bottom - len(bottom_list))
-                if not top_list and not bottom_list:
-                    self.log("nothing left to collect, round finished")
-                    break
-
+            self.log("\n%s" % self.label_of(index, "oben"))
+            self.play_entry(index, "oben", key=("oben", index))
             self.scroll_top()
-            for index in top_list:
-                if not self._time_left():
-                    break
-                self.log("\n%s" % self.label_of(index, "oben"))
-                self.play_entry(index, "oben", key=("oben", index))
-                self.scroll_top()
+        self.scroll_bottom()
+        for index in bottom_list:
+            if not self._time_left():
+                break
+            self.log("\n%s" % self.label_of(index, "unten"))
+            self.play_entry(index, "unten", key=("unten", index))
             self.scroll_bottom()
-            for index in bottom_list:
-                if not self._time_left():
-                    break
-                self.log("\n%s" % self.label_of(index, "unten"))
-                self.play_entry(index, "unten", key=("unten", index))
-                self.scroll_bottom()
-        return self.stats
 
 
 # ----------------------------------------------------------------------------
+# Label and order for format_summary, kept apart from self.stats so the dict
+# itself can stay a plain counter and does not have to carry display text.
+SUMMARY_LABELS = [
+    ("attempts", "Attempts"),
+    ("fights", "Fights"),
+    ("ads", "Ads watched"),
+    ("skipped", "Skipped"),
+    ("not_selected", "Not selected"),
+    ("unknown", "Unclear screens"),
+    ("declined", "Declined"),
+    ("exit_caught", "Exit prompts caught"),
+]
+
+
+def format_summary(stats):
+    """The stats dict, laid out for reading rather than printed as a repr.
+
+    `dict.get` rather than a straight lookup, so a caller with an older or
+    trimmed stats dict still gets a readable summary instead of a KeyError.
+    """
+    width = max(len(label) for _, label in SUMMARY_LABELS)
+    lines = ["Summary"]
+    lines += ["  %-*s %d" % (width, label, stats.get(key, 0))
+             for key, label in SUMMARY_LABELS]
+    return "\n".join(lines)
+
+
 def probe(cap, log=print):
     """Shows what is recognised on the current screen. Clicks nothing."""
     img = cap.grab()
@@ -1987,6 +2599,10 @@ def probe(cap, log=print):
         % (", ".join("%.3f" % c for c in info["karten"]) or "none"))
     log("\nClick targets the bot would use")
     log("  dungeon tab     pixel %d,%d" % to_pixel(img, *NAV_DUNGEON))
+    home = home_button(img)
+    log("  home button     %s"
+        % ("pixel %d,%d" % to_pixel(img, home["fx"], home["fy"])
+           if home else "not on this screen"))
     for i, fy in enumerate(info["karten"]):
         log("  card %d          pixel %d,%d" % (i + 1, *to_pixel(img, CARD_X, fy)))
     return info
@@ -1996,7 +2612,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--go", action="store_true", help="actually click")
     ap.add_argument("--probe", action="store_true", help="only show what is recognised")
-    ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--entries", type=int, default=7,
                     help="number of entries in the list")
     ap.add_argument("--skip-last", type=int, default=1,
@@ -2018,8 +2633,10 @@ def main():
                     help="skip these dungeons, same short names")
     ap.add_argument("--list-dungeons", action="store_true",
                     help="list the short names and exit")
-    ap.add_argument("--no-adb", action="store_true",
-                    help="without ADB, input via mouse and keyboard")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames and clicks via adb or via the window and "
+                         "mouse. Default: the stored switch (Helpermon's "
+                         "window, or DGUP_ADB_MODE)")
     ap.add_argument("--no-survey", action="store_true",
                     help="skip the pre-check, try every dungeon directly")
     ap.add_argument("--min-battle", type=float, default=6.0,
@@ -2028,9 +2645,10 @@ def main():
                     help="factor on all wait times, higher is more patient")
     ap.add_argument("--swipes", type=int, default=1,
                     help="swipes needed to scroll to the end of the list")
-    ap.add_argument("--no-mouse-guard", action="store_true",
-                    help="disable the F7/F8 hotkey and the auto-pause on "
-                         "real mouse movement")
+    ap.add_argument("--no-hotkeys", "--no-mouse-guard",
+                    action="store_true", dest="no_hotkeys",
+                    help="disable the global F7/F8 pause and abort keys "
+                         "(--no-mouse-guard is the old name for this)")
     args = ap.parse_args()
 
     if args.list_dungeons:
@@ -2057,8 +2675,8 @@ def main():
         print("Skipped: %s"
               % ", ".join(DUNGEON_NAMES[i] for i in sorted(skip)))
 
-    cap = (capture.open_window() if args.no_adb
-           else capture.open_best(prefer_adb=True))
+    adb = userdata.adb_mode() if args.input is None else args.input == "adb"
+    cap = capture.open_for(adb)
     if args.probe:
         probe(cap)
         return
@@ -2075,22 +2693,22 @@ def main():
                      min_battle=args.min_battle, swipes=args.swipes)
     print("Reference frame %d x %d" % bot.device)
     _keys(bot)
-    control = None if args.no_mouse_guard else guard.start(bot.control, cap=cap)
+    control = None if args.no_hotkeys else guard.start(bot.control)
     try:
-        stats = bot.run(args.rounds)
+        stats = bot.run()
     except KeyboardInterrupt:
         stats = bot.stats
         print("\naborted")
     finally:
         if control:
             control.stop()
-    print("\nSummary: %s" % stats)
+    print("\n%s" % format_summary(stats))
 
 
 def _keys(bot):
     """Space pauses, q aborts, console focus only. guard.py additionally
-    wires up a global F7/F8 hotkey and mouse-movement auto-pause that work
-    even when the emulator window has focus instead of this console."""
+    wires up global F7/F8 hotkeys that work even when the emulator window
+    has focus instead of this console."""
     try:
         import msvcrt
     except ImportError:

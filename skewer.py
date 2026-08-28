@@ -833,20 +833,15 @@ class SkewerBot:
         pixels too high, measured 14 px at fy 0.550 in a 1051 px window.
 
         game_rect handles both: on an ADB frame the device aspect matches
-        exactly, so it returns the whole image and the origin is 0,0.
+        exactly, so it returns the whole image and the origin is 0,0. It
+        used to reach through a HybridCapture to its own AdbCapture for a
+        second, unmixed frame; that mixed mode is gone, so the one frame
+        the bot is looking at is always the right one to measure.
         """
-        adb = getattr(self.cap, "adb", None)
-        img = None
-        if adb is not None:
-            try:
-                img = adb.grab()
-            except Exception:
-                img = None
-        if img is None:
-            try:
-                img = self.cap.grab()
-            except Exception:
-                return (0, 0), (1080, 1920)
+        try:
+            img = self.cap.grab()
+        except Exception:
+            return (0, 0), (1080, 1920)
         x0, y0, gw, gh = game_rect(img)
         return (x0, y0), (gw, gh)
 
@@ -1220,19 +1215,22 @@ def main():
                          + "%g-%g" % (MIN_SPEED, MAX_SPEED))
     ap.add_argument("--patience", type=float, default=1.0,
                     help="factor on all wait times, higher is more patient")
-    ap.add_argument("--no-adb", action="store_true",
-                    help="without ADB, input via mouse and keyboard")
-    ap.add_argument("--no-mouse-guard", action="store_true",
-                    help="disable the F7/F8 hotkey and the auto-pause on "
-                         "real mouse movement")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames and clicks via adb or via the window and "
+                         "mouse. Default: the stored switch (Helpermon's "
+                         "window, or DGUP_ADB_MODE)")
+    ap.add_argument("--no-hotkeys", "--no-mouse-guard",
+                    action="store_true", dest="no_hotkeys",
+                    help="disable the global F7/F8 pause and abort keys "
+                         "(--no-mouse-guard is the old name for this)")
     args = ap.parse_args()
     if args.no_complete and args.rounds != 1:
         print("--no-complete stops after the first order; ignoring --rounds %d, using 1"
               % args.rounds)
         args.rounds = 1
 
-    cap = (capture.open_window() if args.no_adb
-           else capture.open_best(prefer_adb=True))
+    adb = userdata.adb_mode() if args.input is None else args.input == "adb"
+    cap = capture.open_for(adb)
     if args.probe:
         probe(cap, tag=args.tag)
         return
@@ -1246,8 +1244,15 @@ def main():
         print("Speed %.2f is outside %g-%g, using %.2f"
               % (args.speed, MIN_SPEED, MAX_SPEED, bot.speed))
     print("Speed %.2f, %.0f ms between clicks" % (bot.speed, bot.tick * 1000))
+    # An ADB frame costs roughly 400 ms, measured in PLAN_ADB_ONLY.md
+    # (not shipped publicly). A tick below that is a promise --speed cannot
+    # keep -- each round still waits for its frame -- so it is said here
+    # rather than left to look like the setting is doing nothing.
+    if not cap.moves_mouse and bot.tick * 1000 < 400:
+        print("Note: an ADB frame costs roughly 400 ms, above this tick. "
+              "The actual pace is bounded by that, not by --speed.")
     _keys(bot)
-    control = None if args.no_mouse_guard else guard.start(bot.control, cap=cap)
+    control = None if args.no_hotkeys else guard.start(bot.control)
     try:
         stats = bot.run(args.rounds, from_menu=args.from_menu)
     except KeyboardInterrupt:
@@ -1261,8 +1266,8 @@ def main():
 
 def _keys(bot):
     """Space pauses, q aborts, console focus only. guard.py additionally
-    wires up a global F7/F8 hotkey and mouse-movement auto-pause that work
-    even when the emulator window has focus instead of this console."""
+    wires up global F7/F8 hotkeys that work even when the emulator window
+    has focus instead of this console."""
     try:
         import msvcrt
     except ImportError:

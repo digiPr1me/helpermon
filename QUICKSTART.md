@@ -6,9 +6,8 @@
 > game are the property of their owners. Nothing from the game is contained
 > here; what the bots need, they learn from your own screen.
 
-For people seeing this program for the first time. Helpermon plays three parts
-of Digimon UP for you: the dungeon list, the **Digital World Search** and the
-**Midsummer Digimon Night Market**.
+For people seeing this program for the first time. Helpermon plays parts of
+Digimon UP for you: the dungeon list and the **Digital World Search**.
 
 ## What you need
 
@@ -46,7 +45,9 @@ apply to them.
 
 The first launch shows two dialogs. The first one is about **how Helpermon
 reaches the emulator**, and it is the one that decides what the next hour
-looks like:
+looks like. Both frames and clicks are picked together, by the **Use ADB for
+screen and clicks** switch at the top right of every window a bot runs in.
+It defaults to on:
 
 * **With ADB**, Helpermon sends its taps straight to the emulator. Your mouse
   stays yours and the window may sit behind other windows. You have to switch
@@ -58,11 +59,17 @@ looks like:
   sitting. That is the emulator complaining, not the game — restart the
   emulator, or put that bot on mouse input for the rest of the session.
 * **Without ADB**, the bot moves your real mouse. Then leave the mouse alone
-  while a bot runs, or tick **Pause Bot on mouse move** at the top right of
-  the window and it stops the moment you touch it. The emulator window also
-  has to stay visible, in front and uncovered, and the screen must not go to
-  sleep — screen capture keeps returning the last picture that was drawn, and
-  a bot reading that clicks at what was there minutes ago.
+  while a bot runs: you and the bot are sharing it, and every move of yours
+  goes into the game as well. Press F7 when you want it back. The emulator
+  window also has to stay visible, in front and uncovered, and the screen must
+  not go to sleep — screen capture keeps returning the last picture that
+  was drawn, and a bot reading that clicks at what was there minutes ago.
+
+Finding `adb.exe` is automatic: Helpermon asks Windows where LDPlayer is
+installed, then looks on every hard disk. On the rare machine where neither
+turns it up — an install somewhere unusual, or a copy of `adb.exe` kept apart
+from LDPlayer's own folder — **Start here** has a row under step 1 to browse
+for it directly, either the file itself or the LDPlayer folder it lives in.
 
 The second dialog is the legal notice, which you have to read. After that you
 land on **Start here**.
@@ -77,7 +84,7 @@ The window has three parts, and they do not change:
   one line saying what was found. It reports and nothing more — the buttons
   that start the emulator live on step 1 of Start here, because a row of
   buttons repeated on every page competes with whatever that page is for. The
-  one exception is top right, the mouse-movement pause, which is wanted at the
+  one exception is top right, the **Use ADB** switch, which is wanted at the
   moment a bot has just taken the mouse.
 * a **sidebar** on the left listing where you can go: Start here, the three
   bots, About. A green dot next to a bot means it is ready to run, an orange
@@ -91,22 +98,23 @@ At the top, while there is still setup to be done, is **Try it right now**.
 The dungeon bot needs nothing taught, so that card starts the emulator and
 takes you straight to it. This is the short way, and it is the one to take
 first: you see the program actually working before you spend any time on it.
-The card disappears once all three bots are set up, since by then you know.
+The card disappears once the bots that need setup are set up, since by then
+you know.
 
 Underneath is **Set everything up**, three numbered steps: start the emulator,
 teach it what your screen looks like, run a bot. Each one shows how far you
 have got and has the one button that moves you on. Steps you have finished get
 a tick.
 
-## Three bots, different requirements
+## Two bots, different requirements
 
-| | Dungeons | Digital World Search | Night Market |
-|---|---|---|---|
-| Plays | the dungeon list | Digital World Search | Midsummer Digimon Night Market |
-| Setup required | no | yes, about 5 minutes | yes, twelve icons |
-| Game language | any | you teach it the banner texts | any |
-| Character skin | irrelevant | **Botamon**, see below | irrelevant |
-| In the sidebar | Dungeons | World Search | Night Market |
+| | Dungeons | Digital World Search |
+|---|---|---|
+| Plays | the dungeon list | Digital World Search |
+| Setup required | no | yes, about 5 minutes |
+| Game language | any | you teach it the banner texts |
+| Character skin | irrelevant | **Botamon**, see below |
+| In the sidebar | Dungeons | World Search |
 
 **The dungeon bot can start right away.** It recognises buttons by colour and
 position, so it needs no images from the game at all and works in any language.
@@ -122,13 +130,6 @@ is shipped with the program.
 > it can simply walk the wrong way. If you use a different skin, watch the
 > first run with **Dry run** before letting it click.
 
-**The Night Market bot needs setup too, a smaller one.** It is there to grind
-the items out of the seasonal missions: it plays round after round for the
-mission rewards, not for a high score. It reads the order shown above the
-counter, builds the same skewer from the 4x3 ingredient grid and submits it. For that it has to tell the twelve ingredients apart, so you
-crop those twelve icons from your own screen once. Language does not matter,
-they are pictures.
-
 ## Order of things
 
 Follow the three steps on **Start here** and you are done. In full:
@@ -138,40 +139,136 @@ Follow the three steps on **Start here** and you are done. In full:
 2. Open **Dungeons** in the sidebar and press **Dry run** first. It clicks
    nothing and only shows what it would do
 3. If that looks sensible, press **Start**
-4. For the other two bots, open that bot in the sidebar and press **Set up
+4. For Digital World Search, open that bot in the sidebar and press **Set up
    this bot**, bottom right. That window has that bot's steps and no others,
    so there is no way to wander into a different bot's setup by pressing
    Continue
-5. After setup, open Digital World Search in the game and stay on the board,
-   then **World Search** in the sidebar and press **Start**
-6. For the Night Market, open it in the game and stop at its own main menu,
-   the screen with the Play Game lantern — the bot presses Play Game itself.
-   Then **Night Market** in the sidebar and **Start**
+5. After setup, stand on Digimon UP's plain main screen, then **World
+   Search** in the sidebar and press **Start**. The bot opens the Digital
+   World Search itself and goes back to the main screen when it is done
 
 Every bot page works the same way: its settings, then **Start**, **Pause** and
 **Stop**, then its log. **Dry run** sits below under *For testing* — it plans
 everything and clicks nothing, which is what to send along if you report a
 problem.
 
-### The Night Market page
+### The Dungeons page
+
+Each dungeon has a number: how many attempts you want the bot to spend there.
+
+| Number | What it means |
+|---|---|
+| **4** | a day's worth, and the default. Two tickets from the daily reset plus two more for watching ads |
+| **0** | leave this dungeon alone |
+| more than 4 | eats into tickets you have bought or saved up |
+
+**Set all** puts one number on every dungeon at once. It stamps them, so you
+can still put a single dungeon back to 0 afterwards. It starts at **5**
+rather than 4, its own default and not a reflection of the one above.
+
+The bot reads both counters off each card before it opens anything — the
+tickets you have, and the ads you have not watched yet — and plays the smaller
+of the two numbers: what you asked for, and what the game will actually hand
+out. A dungeon with nothing left is skipped without being opened. If a counter
+cannot be read, the dungeon is played anyway; unreadable is not the same as
+empty.
+
+There is no *Rounds* setting, and the bot no longer goes round at all: it walks
+the list once, top half then bottom half, and each dungeon gets its number in
+that one visit. Rounds were there so a lost battle could be retried later, but
+this routine has no lost battles — it spends attempts, and a spent attempt is
+spent whatever the outcome.
+
+However the run ends — finished, stopped, or with an error — the bot presses
+the game's own home button, the globe in the middle of the bottom bar, and
+leaves the game on its main screen. That is where the passive helper does its
+work and where the next bot expects to start, so nothing is left standing on a
+dungeon panel. If it cannot get there it says so and leaves the game where it
+stands rather than tapping about blindly.
+
+### The Bond & Quest Loop page
+
+This one has no Start button. It is a helper that runs by itself for as long
+as Helpermon is open, and two switches turn its two halves on independently:
 
 | Setting | What it does |
 |---|---|
-| Rounds | how many rounds to play in a row |
-| Speed | the wait between clicks. 1 is full pace, lower is slower |
-| Start from the main menu | clicks Play Game and Start before the first round |
-| Diagnostics | reads the current screen once and clicks nothing |
+| Watch the main screen while Helpermon is open | the bond/hologram switch. Takes effect at once and is remembered |
+| Collect the bond token | taps your partner when the food bubble is up |
+| Keep Auto Spend for Hologram Tickets running | reads the counter under the device and presses the (A) button when it stops falling |
+| Show everything it sees | every round in the log, not just what happened |
+| Work through the repeating quests | the quest loop's own switch. Takes effect at once and is remembered |
+| Play the dungeon quests | lets the loop spend two of the day's dungeon attempts on a dungeon quest |
+| Do the summon quests | lets the loop watch the free ads and draw once for a summon quest |
+| Claim only, never play anything | collects a finished quest, but never plays one to finish it |
 
-Speed only changes the wait *between clicks*, never the waits for the game
-itself. Full pace is 330 ms per click. It used to be 180, and at that rate the
-bot was reaching for a grid the emulator had not finished redrawing — which
-costs an order rather than saving time. The dial in the window only goes
-downwards from full pace; if you want to try faster, `py skewer.py --go
---speed 1.2` will, and watch a real round before leaving it there.
+**The quest half asks for a supporter code.** The four settings from "Work
+through the repeating quests" down are a supporter feature; the bond token
+and Auto Spend above them are free and stay free. Ticking the switch without
+a code explains itself and offers the two ways on -- see *Supporter features*
+in the README, or the About page in the window.
 
-Press **Diagnostics** whenever the bot behaves oddly. It prints what it sees
-right now, ingredient by ingredient, and saves the crops it read from into
-`debug_skewer/`.
+**The quests come in a fixed order that repeats.** The game hands out fifteen
+of them, one at a time on a card at the right edge of the battle screen, and
+starts again from the first once the fifteenth is claimed. The loop reads
+that card and follows the same order — it does not pick a quest, it works
+through the row exactly as the game presents it. A quest it cannot do yet
+(no dungeon attempts left, not enough summon tickets, Auto Spend switched
+off) holds up every quest after it, because the routine is a queue and not a
+choice: the status line under the switch says which step the loop is on and,
+once it is waiting on something, why.
+
+Starting one of the three bots by hand takes the emulator back from a
+dungeon or summon step the loop is in the middle of playing, within a few
+seconds — the same way starting a second bot always wins over whatever ran
+before it.
+
+**Without ADB, keep LDPlayer uncovered.** Window capture reads the screen
+where the emulator window sits, not the window itself, so anything in front of
+it — a browser, this window — is what the helper sees, and it will report that
+it cannot find the main screen. Switch ADB on and that stops mattering: the
+frames then come from the device, and the emulator may be behind other windows
+or minimised. For a helper meant to run all day while you do something else,
+ADB is the mode that fits.
+
+It works on the game's **main screen** and nowhere else. On any other screen,
+under any dialog, and while one of the three bots is playing, it does nothing
+at all and says so in its log. Without ADB a tap moves your real mouse, so it
+also holds off while the mouse is being used — it keeps reading, it just does
+not touch anything.
+
+Two things worth knowing about what it does:
+
+**The bond token is collected by tapping the figure, not the bubble.** So the
+bubble has to be found first: tapping a Digimon without one open opens its
+Partner window instead. If that happens anyway — you collected the token
+yourself a moment earlier — the helper taps that window away again. **Only
+that one.** A window is the helper's for fifteen seconds after its own tap on
+a figure, and nothing else it ever sees gets closed, so a window you open
+stays open. It taps the moment it sees a bubble rather than waiting for a
+second look, because your character can die with the bubble up and take it
+with them.
+
+**The (A) button is a toggle.** Pressing it while Auto Spend is already
+running would switch it off, so the helper never presses on a hunch. It
+presses only after the counter has stood still for twenty seconds, checks the
+counter again five seconds later, and waits longer before each further
+attempt. At zero tickets it does not press at all: the game switches Auto
+Spend off by itself when they run out, and there is nothing to spend.
+
+The log is the point of this page. Every line names either a number it read
+or the reason it did nothing:
+
+```
+  holograms 77,605, first reading
+  holograms 77,595 (-10 in 5 s), auto spend is running
+  bond bubble at 0.507/0.338, seen once
+  bond bubble at 0.507/0.338 confirmed, tapping the figure at 0.326/0.338
+    bubble gone, token collected
+  holograms 77,545, unchanged for 21 s
+  auto spend looks off, pressing the button
+  not the plain main screen, nothing done this round
+```
 
 ## Creating the templates
 
@@ -184,7 +281,7 @@ Press **Set up this bot** at the bottom right of a bot's page and a window
 opens with that bot's steps and nothing else — Continue past the last one
 finishes. That is the only way in from the window, on purpose. To walk every
 step of every bot in one go, run `py setup_wizard.py` from a terminal. The
-eight steps and who owns them:
+seven steps and who owns them:
 
 | Step | Belongs to | What it learns | What must be on screen |
 |---|---|---|---|
@@ -193,24 +290,11 @@ eight steps and who owns them:
 | Objects | World Search | tickets, claws, paws, fireballs | the minigame board |
 | Pyramid | World Search | the pyramid obstacle | the minigame board |
 | Banners | World Search | the two banner texts, in your game language | the minigame board |
-| Skewer | Night Market | the twelve ingredient icons | the Night Market |
-| Game icon | Dungeons | where the game's icon is, so Instant AFK can start it | the emulator's home screen |
+| Game icon | Dungeons | what the game's icon looks like, so Helpermon can tell the emulator's home screen from the game | the emulator's home screen |
 | Open cases | World Search | rare finds the bot collected while running | anything |
 
-Two things are worth knowing:
-
-* Press **Grab a new frame** after switching what is on screen. The board steps
-  need a board on screen, the Skewer step needs the cooking minigame instead.
-* In the Skewer step the **names are yours to choose**. The first time, the
-  boxes hold guesses taken from a screenshot; type what the ingredient
-  actually is, or leave them. After that the boxes offer the names you
-  already used, so saving again replaces those icons instead of adding more.
-* **Never give one ingredient two names.** Two names for the same picture
-  leave the matcher no way to choose between them, and it will refuse to name
-  that cell at all — which stops the bot from reading an order. The wizard
-  notices this after saving and offers to move the leftovers aside.
-* **Test match** reads every cell back afterwards, and each one should name
-  itself. A cell showing `?` is the warning sign.
+Worth knowing: press **Grab a new frame** after switching what is on screen.
+The board steps need a board on screen.
 
 Everything learned is stored under `userdata/`, next to the program, never in
 the program folder itself. That means:
@@ -247,6 +331,30 @@ virus scanners are built to flag, and an unsigned one carries a SmartScreen
 warning until enough people have downloaded it. The source and one `.bat` avoid
 all of it, at the price of installing Python once.
 
+## Feedback
+
+After a run of at least a minute, a thin bar appears under that bot's
+buttons: **Did this run do what you wanted?**, Yes or No, and **Tell me
+more**. One click on Yes or No sends and is done — no follow-up dialog. It
+shows at most once a day, and never while a bot is starting or running.
+
+**Tell me more**, and the **Feedback** entry in the sidebar, open a small
+form: what part of the program it is about, what happened, and an optional
+way to reach you. **Show exactly what will be sent** expands into the exact
+text before you press Send.
+
+A report carries the version, your Windows and Python version, whether adb
+was found, how long the run took, and the last 80 lines of that bot's log —
+only if the box for it is ticked. **Nothing from the game screen is ever
+included, not even a screenshot.** The first time you send anything, a
+one-off dialog says exactly this before it goes anywhere.
+
+If it cannot be sent, nothing is silently lost: it is written to a file
+instead, and you get the choice of copying it to the clipboard or opening
+the GitHub issue form. The Feedback page also opens that GitHub form
+directly, and shows a button to the folder if any report is still sitting
+there unsent.
+
 ## If something does not work
 
 | Symptom | Likely cause |
@@ -256,11 +364,8 @@ all of it, at the price of installing Python once.
 | bot clicks the wrong spot | the window was not in the foreground |
 | list does not scroll | raise Patience on the Dungeons page |
 | unknown banner text | learn text 2 in the wizard |
-| Night Market bot refuses to start | the twelve icons are not learned yet, run the wizard's Skewer step |
-| Night Market bot builds the wrong order | press Diagnostics and check what it reads; relearn any icon that names itself wrongly |
-| Night Market bot misses clicks | Speed is too high for your machine, lower it |
 
-Pause and emergency stop are available in all three bots. They take effect
+Pause and emergency stop are available in every bot. They take effect
 between two actions, so within about a second, never in the middle of a click.
 
 ## Uninstalling

@@ -14,8 +14,36 @@ only moves the figure.
 
 import vision
 
-# Power-up Typen, jeder einzeln zuschaltbar
+# Power-up types, each one switchable on its own.
+#
+# These are identifiers, not labels. Every one of them is the name of a
+# template file on disk -- templates/ticket_orange.png and the player's own
+# userdata/templates/ticket_orange.png, which vision.load_templates looks up
+# by exactly this string -- and they are also in learning.NEEDED_TEMPLATES,
+# in bot.py's --wanted, and in the "wanted" list saved in everybody's
+# settings file. Renaming one here orphans a player's learned image and
+# costs them the setup, so it is the one thing in this file not to do.
 ALL_WANTED = ["ticket_orange", "ticket_green", "ticket_pink", "claw", "paw", "fireball"]
+
+# What a player sees instead. This is the place to rename an item: the
+# windows read it and nothing on disk knows about it. Both windows read it
+# -- Helpermon's World Search page and gui.py, the developer one -- so that
+# a rename does not have to be remembered twice. An item with no entry
+# falls back to its key with the underscores opened out, which is what the
+# World Search page did for all six of them before this existed.
+WANTED_LABEL = {
+    "ticket_orange": "SP Training Chip",
+    "ticket_green": "Skill Card Summon Ticket",
+    "ticket_pink": "Support Summon Ticket",
+    "claw": "Attack Token",
+    "paw": "Stamina Token",
+    "fireball": "Dash Token",
+}
+
+
+def wanted_label(key):
+    """The name to show for a board item."""
+    return WANTED_LABEL.get(key, key.replace("_", " "))
 
 FIG_COL_MAX = 1  # Figur kann nur in sichtbarer Spalte 0 oder 1 stehen
 

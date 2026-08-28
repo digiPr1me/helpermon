@@ -16,7 +16,7 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 
 import engine
 import planner as planner_mod
@@ -29,14 +29,9 @@ SETTINGS_FILE = os.path.join(_APPDATA, "helpermon_minigame.json")
 # new one is not there, so the rename costs nobody their settings.
 OLD_SETTINGS_FILE = os.path.join(_APPDATA, "digibot_gui.json")
 
-WANTED_LABEL = {
-    "ticket_orange": "orange ticket",
-    "ticket_green": "green ticket",
-    "ticket_pink": "pink ticket",
-    "claw": "claws",
-    "paw": "paws",
-    "fireball": "fireball",
-}
+# The item names live beside the items themselves, in world.WANTED_LABEL,
+# so that renaming one is a single line rather than the same line in two
+# windows. This file used to carry its own copy of that table.
 COUNTER_LABEL = {"paws": "paws", "claws": "claws", "fireballs": "fire",
                  "meters": "metres", "top_orange": "orange",
                  "top_green": "green", "top_pink": "pink"}
@@ -117,10 +112,10 @@ class App(tk.Tk):
     def _build(self):
         # This window has no header of its own, so it gets a thin one for the
         # same reason the other two have the switch top right: it belongs in
-        # the same place wherever you are when the bot takes the mouse.
+        # the same place wherever you are when a run starts.
         head = tk.Frame(self, padx=12, pady=6)
         head.pack(fill="x")
-        widgets.MousePauseSwitch(head).pack(side="right")
+        widgets.AdbSwitch(head).pack(side="right")
 
         left = tk.Frame(self, padx=12, pady=10)
         left.pack(side="left", fill="y")
@@ -134,8 +129,9 @@ class App(tk.Tk):
         for i, key in enumerate(world_mod.ALL_WANTED):
             var = tk.BooleanVar(value=key in self.conf.get("wanted", world_mod.ALL_WANTED))
             self.vars["want_" + key] = var
-            tk.Checkbutton(box, text=WANTED_LABEL[key], variable=var).grid(
-                row=i // 2, column=i % 2, sticky="w")
+            tk.Checkbutton(box, text=world_mod.wanted_label(key),
+                           variable=var).grid(row=i // 2, column=i % 2,
+                                              sticky="w")
 
         self._spin(left, "Limits", "min_paws", "Stop at paws", 20, 0, 9999)
         self._spin(left, None, "max_actions", "Max actions, 0 for none", 0, 0, 99999)
@@ -153,14 +149,6 @@ class App(tk.Tk):
         tk.Scale(frm, from_=0.4, to=1.0, resolution=0.05, orient="horizontal",
                  variable=self.vars["min_pace"], showvalue=True,
                  length=140).pack(side="left")
-
-        tk.Label(left, text="Capture", font=("Segoe UI", 9, "bold")).pack(
-            anchor="w", pady=(8, 0))
-        self.vars["capture_mode"] = tk.StringVar(
-            value=self.conf.get("capture_mode", "hybrid"))
-        ttk.Combobox(left, textvariable=self.vars["capture_mode"], width=24,
-                     state="readonly",
-                     values=["hybrid", "window", "adb"]).pack(anchor="w")
 
         tk.Label(left, text="Cold start", font=("Segoe UI", 9, "bold")).pack(
             anchor="w", pady=(10, 0))
@@ -279,7 +267,6 @@ class App(tk.Tk):
             settle=self.vars["settle"].get(),
             min_pace=self.vars["min_pace"].get(),
             adaptive=self.vars["adaptive"].get(),
-            capture_mode=self.vars["capture_mode"].get(),
             autostart=self.vars["autostart"].get(),
             wait_for_board=self.vars["wait_for_board"].get(),
             bit_paw=self.vars["bit_paw"].get(),
@@ -340,11 +327,11 @@ class App(tk.Tk):
     def _open_wizard(self):
         """Assistent in einem eigenen Prozess starten, damit ein Fehler dort
         das Hauptfenster nicht mitnimmt."""
-        import subprocess
+        import noconsole
         import sys
         try:
-            subprocess.Popen([sys.executable, "setup_wizard.py"],
-                             cwd=os.path.dirname(os.path.abspath(__file__)))
+            noconsole.popen([sys.executable, "setup_wizard.py"],
+                            cwd=os.path.dirname(os.path.abspath(__file__)))
             self._write("Assistent gestartet", "dim")
         except Exception as err:
             self._write("Assistent nicht startbar, %s" % err, "warn")
@@ -356,8 +343,7 @@ class App(tk.Tk):
             import cv2
             import vision
             try:
-                cap = engine.open_capture(engine.Settings(
-                    capture_mode=self.vars["capture_mode"].get()))
+                cap = engine.open_capture(engine.Settings())
                 img = cap.grab()
                 calib = vision.calibrate(img)
                 tpl = vision.load_templates()
@@ -461,7 +447,7 @@ class App(tk.Tk):
                            if self.vars["want_" + k].get()],
                 "skin_hint_off": self.conf.get("skin_hint_off", False)}
         for key in ("min_paws", "max_actions", "target_meters", "click_delay",
-                    "settle", "min_pace", "adaptive", "capture_mode",
+                    "settle", "min_pace", "adaptive",
                     "bit_paw", "bit_claw", "bit_skill", "bit_per_action",
                     "bit_pyramid_loot", "row_slack", "autostart",
                     "wait_for_board"):

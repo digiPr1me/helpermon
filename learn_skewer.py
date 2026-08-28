@@ -9,8 +9,8 @@ skewer bot's fixed 4x3 ingredient grid instead: crop, show, let you name
 it, save it as a template PNG under userdata/templates, same on-disk format
 and the same to_photo() display helper as the wizard uses.
 
-  py learn_skewer.py              window mode, clicks via ADB if available
-  py learn_skewer.py --no-adb     window mode, mouse-only reading
+  py learn_skewer.py                the stored switch decides ADB or window
+  py learn_skewer.py --input mouse  window capture regardless of the switch
 
 Never clicks anything in the game, same as setup_wizard.py. The 12 starter
 names are guesses (see skewer.INGREDIENT_NAMES) -- rename them here to
@@ -22,6 +22,7 @@ import tkinter as tk
 
 import capture
 import skewer
+import userdata
 from setup_wizard import to_photo
 
 
@@ -142,11 +143,13 @@ class Learner(tk.Tk):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--no-adb", action="store_true",
-                    help="without ADB, window capture only")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames via adb or via the window. Default: the "
+                         "stored switch (Helpermon's window, or "
+                         "DGUP_ADB_MODE)")
     args = ap.parse_args()
-    cap = (capture.open_window() if args.no_adb
-           else capture.open_best(prefer_adb=True))
+    adb = userdata.adb_mode() if args.input is None else args.input == "adb"
+    cap = capture.open_for(adb)
     app = Learner(cap)
     app.mainloop()
 

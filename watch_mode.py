@@ -6,9 +6,9 @@ Purpose: check whether recognition is sound before the bot acts. You play, the
 script logs. Every action of yours has to show up as a correct delta; then the
 foundation holds.
 
-  py watch_mode.py                  loop until Ctrl C
+  py watch_mode.py                 loop until Ctrl C
   py watch_mode.py --interval 1.0
-  py watch_mode.py --source window  fallback without ADB
+  py watch_mode.py --input mouse   window capture, no ADB
 """
 
 import argparse
@@ -20,6 +20,7 @@ import cv2
 
 import capture
 import tracker
+import userdata
 import vision
 
 DELTA_LABEL = {
@@ -59,9 +60,12 @@ def format_deltas(deltas, values):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=float, default=1.0)
-    ap.add_argument("--source", choices=["adb", "window"], default="adb")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames via adb or via the window. Default: the "
+                         "stored switch (Helpermon's window, or "
+                         "DGUP_ADB_MODE)")
     ap.add_argument("--title", default="LDPlayer")
-    ap.add_argument("--debugdir", default="debug_live")
+    ap.add_argument("--debugdir", default="debug_explore")
     ap.add_argument("--save-every", type=int, default=0,
                     help="jedes n-te Bild speichern, 0 nur bei Aenderungen")
     ap.add_argument("--calib-frames", type=int, default=8,
@@ -70,7 +74,8 @@ def main():
 
     os.makedirs(args.debugdir, exist_ok=True)
     os.makedirs(os.path.join(args.debugdir, "unknown"), exist_ok=True)
-    cap = capture.open_capture(prefer=args.source, title_contains=args.title)
+    adb = userdata.adb_mode() if args.input is None else args.input == "adb"
+    cap = capture.open_for(adb, title_contains=args.title)
 
     templates = vision.load_templates()
     if not templates:

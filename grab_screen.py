@@ -20,6 +20,7 @@ import cv2
 
 import capture
 import dungeon as D
+import userdata
 
 OUT = "debug_dungeon"
 
@@ -29,9 +30,14 @@ def main():
     ap.add_argument("--wait", type=float, default=5.0,
                     help="seconds before grabbing, to bring the screen up")
     ap.add_argument("--name", default="screen")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames via adb or via the window. Default: the "
+                         "stored switch (Helpermon's window, or "
+                         "DGUP_ADB_MODE)")
     args = ap.parse_args()
 
-    cap = capture.open_window()
+    adb = userdata.adb_mode() if args.input is None else args.input == "adb"
+    cap = capture.open_for(adb)
     for left in range(int(args.wait), 0, -1):
         print("  %d ..." % left)
         time.sleep(1)

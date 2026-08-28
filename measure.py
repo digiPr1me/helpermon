@@ -16,6 +16,7 @@ import time
 import actions
 import engine
 import capture
+import userdata
 import vision
 import world as world_mod
 
@@ -34,7 +35,7 @@ def main():
     ap.add_argument("--calib-frames", type=int, default=5)
     args = ap.parse_args()
 
-    cap = capture.open_capture()
+    cap = capture.open_for(userdata.adb_mode())
     templates = vision.load_templates()
     st = engine.Settings(calib_frames=args.calib_frames)
     started = engine.find_start(cap, templates, st,

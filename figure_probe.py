@@ -15,6 +15,7 @@ import time
 import cv2
 
 import capture
+import userdata
 import vision
 
 PRESETS = {
@@ -29,7 +30,7 @@ def main():
     ap.add_argument("--frames", type=int, default=40)
     ap.add_argument("--interval", type=float, default=0.7)
     ap.add_argument("--color", choices=sorted(PRESETS))
-    ap.add_argument("--debugdir", default="debug_probe")
+    ap.add_argument("--debugdir", default="debug_explore")
     args = ap.parse_args()
 
     if args.color:
@@ -38,7 +39,7 @@ def main():
     os.makedirs(args.debugdir, exist_ok=True)
 
     print("Suche Emulator...", flush=True)
-    cap = capture.open_capture()
+    cap = capture.open_for(userdata.adb_mode())
     templates = vision.load_templates()
     print("Messe %d Frames, es wird nicht geklickt." % args.frames, flush=True)
     calib = None

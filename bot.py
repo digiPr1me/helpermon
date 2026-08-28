@@ -11,9 +11,8 @@ events are only turned into lines.
   py bot.py --go --bit-per-action 0     resources only, no time value
 
 F7 pauses/resumes and F8 aborts globally, even with the emulator window in
-focus instead of this console. Touching the real mouse also pauses on its
-own, and resumes again once it has been still for a few seconds. See
-guard.py. Disable all of that with --no-mouse-guard.
+focus instead of this console. See guard.py. Disable both with
+--no-hotkeys. Moving the mouse no longer pauses anything.
 """
 
 import argparse
@@ -72,9 +71,10 @@ def main():
     ap.add_argument("--target-meters", type=int, default=0)
     ap.add_argument("--calib-frames", type=int, default=5)
     ap.add_argument("--wanted", default=",".join(world_mod.ALL_WANTED))
-    ap.add_argument("--capture", choices=["hybrid", "window", "adb"],
-                    default="hybrid",
-                    help="hybrid uses ADB for clicks, window works without ADB")
+    ap.add_argument("--input", choices=["adb", "mouse"], default=None,
+                    help="frames and clicks via adb or via the window and "
+                         "mouse. Default: the stored switch (Helpermon's "
+                         "window, or DGUP_ADB_MODE)")
     ap.add_argument("--screencap", choices=["auto", "raw", "png"], default="png")
     ap.add_argument("--bit-paw", type=int, default=planner_mod.BIT_PAW)
     ap.add_argument("--bit-claw", type=int, default=planner_mod.BIT_CLAW)
@@ -90,16 +90,17 @@ def main():
     ap.add_argument("--bit-middle-bias", type=int,
                     default=planner_mod.BIT_MIDDLE_BIAS,
                     help="bias towards the centre row, 0 disables it")
-    ap.add_argument("--debugdir", default="debug_bot")
+    ap.add_argument("--debugdir", default="debug_explore")
     ap.add_argument("--autostart", action="store_true",
                     help="start LDPlayer and the game")
     ap.add_argument("--ld-index", type=int, default=0)
     ap.add_argument("--ld-package", default=None)
     ap.add_argument("--wait-for-board", type=int, default=0,
                     help="wait this many seconds for the minigame, 0 to disable")
-    ap.add_argument("--no-mouse-guard", action="store_true",
-                    help="disable the F7/F8 hotkey and the auto-pause on "
-                         "real mouse movement")
+    ap.add_argument("--no-hotkeys", "--no-mouse-guard",
+                    action="store_true", dest="no_hotkeys",
+                    help="disable the global F7/F8 pause and abort keys "
+                         "(--no-mouse-guard is the old name for this)")
     args = ap.parse_args()
 
     settings = engine.Settings(
@@ -108,12 +109,13 @@ def main():
         min_paws=args.min_paws, target_meters=args.target_meters,
         click_delay=args.click_delay, settle=args.settle,
         min_pace=args.min_pace, adaptive=not args.fixed_pace,
-        calib_frames=args.calib_frames, capture_mode=args.capture,
+        calib_frames=args.calib_frames,
+        adb=None if args.input is None else args.input == "adb",
         screencap=args.screencap, bit_paw=args.bit_paw, bit_claw=args.bit_claw,
         bit_skill=args.bit_skill, bit_per_action=args.bit_per_action,
         bit_pyramid_loot=args.bit_pyramid_loot, row_slack=args.row_slack,
         debugdir=args.debugdir, autostart=args.autostart,
-        mouse_guard=not args.no_mouse_guard,
+        hotkeys=not args.no_hotkeys,
         ld_index=args.ld_index, ld_package=args.ld_package,
         wait_for_board=args.wait_for_board)
 

@@ -46,6 +46,12 @@ def make_bot(sim, **kw):
     bot.use_ads = True
     bot.max_ads = kw.get("max_ads", 2)
     bot.max_attempts = 6
+    # Per-dungeon budgets, and what a survey read off the cards. Empty here:
+    # these cases exercise the panel, where no counter is visible, so the
+    # loop falls back on max_attempts exactly as it did before counting.
+    bot.budgets = kw.get("budgets", {})
+    bot.counted = kw.get("counted", {})
+    bot.spent = {}
     bot.max_loops = 14
     bot.battle_timeout = 1
     bot.start_timeout = 1
@@ -53,8 +59,9 @@ def make_bot(sim, **kw):
     bot.patience = 0
     bot.pause_short = bot.pause_long = bot.tick = 0
     bot.device = (1080, 1920)
-    bot.stats = {k: 0 for k in ("versuche", "kaempfe", "werbung", "uebersprungen",
-                                "unklar", "abgelehnt", "exit_abgefangen")}
+    bot.stats = {k: 0 for k in ("attempts", "fights", "ads", "skipped",
+                                "unknown", "declined", "exit_caught",
+                                "not_selected")}
     bot.exhausted = set()
     bot.control = D.guard.Stop()
     bot.max_minutes = 0
@@ -355,6 +362,215 @@ def return_cases():
     return ok, 2
 
 
+# ----------------------------------------------------------------------------
+# The way home
+# ----------------------------------------------------------------------------
+# Every size the real frames were measured at, plus the two shapes that catch
+# the mistakes: 1080 x 1920 is an ADB frame, where the reference rect starts
+# above and left of the image, and 730 x 1389 is a window of the wrong shape,
+# where LDPlayer letterboxes the game and every fraction slides. A recogniser
+# that has only been run on one of those has not been tested. See CLAUDE.md.
+HOME_SIZES = ((805, 1390), (765, 1390), (657, 1198), (573, 1056), (497, 914),
+              (1080, 1920), (730, 1389))
+
+
+def blank(w, h):
+    return np.full((h, w, 3), 30, np.uint8)
+
+
+def globe_tile(side):
+    """The wireframe globe, drawn eight times over and shrunk down.
+
+    Drawn straight at the target size, the stroke is one whole pixel wide or
+    two, and the glyph's fill jumps from 0.27 to 0.62 between two window
+    sizes twenty pixels apart -- an artefact of the drawing, not of the
+    shape, and exactly the sort of thing that makes a painted case pass or
+    fail for a reason the game knows nothing about. Shrinking a big drawing
+    keeps the stroke the same share of the glyph: fill stays at 0.42 to 0.48
+    over every size below, against 0.42 to 0.49 measured on the real button.
+    """
+    big = 8 * side
+    tile = np.zeros((big, big), np.uint8)
+    c, g = big // 2, big // 2 - 1
+    t = max(1, int(big * 0.055))
+    cv2.circle(tile, (c, c), g, 255, t)
+    cv2.ellipse(tile, (c, c), (int(g * 0.45), g), 0, 0, 360, 255, t)
+    cv2.line(tile, (c - g, c), (c + g, c), 255, t)
+    cv2.ellipse(tile, (c, c), (g, int(g * 0.52)), 0, 0, 360, 255, t)
+    small = cv2.resize(tile, (side, side), interpolation=cv2.INTER_AREA)
+    return small >= 110
+
+
+def paint_home(img, bright=True):
+    """The home button where the game draws it, in the bottom nav bar.
+
+    `bright` off is the same button with a dialog over it: the game dims what
+    is behind one, and the dimmed glyph leaves the white range entirely --
+    which is what lets one test answer both "where do I tap" and "is anything
+    covering it".
+    """
+    x0, y0, gw, gh = D.game_rect(img)
+    cx, cy = int(x0 + 0.481 * gw), int(y0 + 0.945 * gh)
+    r = int(0.081 * gw / 2)
+    cv2.circle(img, (cx, cy), r, (210, 140, 60) if bright else (70, 60, 50), -1)
+    cv2.circle(img, (cx, cy), int(r * 0.62), (90, 40, 20), -1)
+    side = int(round(0.0485 * gw))
+    tile = globe_tile(side)
+    x, y = cx - side // 2, cy - side // 2
+    img[y:y + side, x:x + side][tile] = ((255, 255, 255) if bright
+                                         else (110, 110, 110))
+    return img
+
+
+def paint_white_bar(img):
+    """A white panel across the bottom, which is what a loading screen and
+    Special Summon standing open over the game both look like down there. It
+    fills the whole crop -- 0.125 wide against the globe's 0.048 -- and is why
+    the width band has a ceiling and not only a floor."""
+    x0, y0, gw, gh = D.game_rect(img)
+    cv2.rectangle(img, (max(0, int(x0 + 0.30 * gw)), int(y0 + 0.88 * gh)),
+                  (int(x0 + 0.70 * gw), int(y0 + 0.99 * gh)),
+                  (250, 250, 250), -1)
+    return img
+
+
+def home_button_cases():
+    ok = 0
+    for w, h in HOME_SIZES:
+        found = D.home_button(paint_home(blank(w, h)))
+        good = (found is not None and abs(found["fx"] - 0.481) <= 0.01
+                and abs(found["fy"] - 0.945) <= 0.01)
+        print("  %4d x %-4d  globe -> %s  %s"
+              % (w, h, ("fx %.3f fy %.3f fw %.4f"
+                        % (found["fx"], found["fy"], found["fw"])
+                        if found else "not found"),
+                 "ok" if good else "FAILED"))
+        ok += good
+    negatives = (("dimmed by a dialog", paint_home(blank(805, 1390), bright=False)),
+                 ("white panel over the bar", paint_white_bar(blank(805, 1390))),
+                 ("nothing down there", blank(805, 1390)))
+    for name, img in negatives:
+        found = D.home_button(img)
+        print("  %-24s -> %s  %s"
+              % (name, "found" if found else "None",
+                 "ok" if not found else "FAILED"))
+        ok += found is None
+    return ok, len(HOME_SIZES) + len(negatives)
+
+
+class HomeScreen:
+    """One word per round: what go_home sees when it looks.
+
+    "main" is the main screen with nothing over it, "bar" a screen with the
+    nav bar on it, "away" anything else. Scripted rather than painted: the
+    pictures have their own cases above, these are about the order of the
+    steps.
+    """
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.presses = 0
+        self.back_to_list = 0
+
+    def grab(self):
+        return self.script.pop(0) if len(self.script) > 1 else self.script[0]
+
+    def tap(self, fx, fy, was=""):
+        self.presses += 1
+
+    def to_list(self, tries=5):
+        self.back_to_list += 1
+        return True
+
+
+def home_bot(screen, dry_run=False):
+    bot = make_bot(Sim([D.LIST]))
+    bot.dry_run = dry_run
+    bot.grab = screen.grab
+    bot.tap = screen.tap
+    bot.return_to_list = screen.to_list
+    bot.save_unknown = lambda img, tag: None
+    return bot
+
+
+def go_home_cases():
+    """What go_home does with each screen a run can end on."""
+    ok = 0
+    cases = [
+        ("already on the main screen", ["main"], True, 0, 0),
+        ("from the list, one press", ["bar", "main"], True, 1, 0),
+        ("first press swallowed", ["bar", "bar", "main"], True, 2, 0),
+        ("never gets there", ["bar"] * 8, False, D.HOME_PRESSES_MAX, 0),
+        ("no bar, back to the list first", ["away", "bar", "main"], True, 1, 1),
+        ("nowhere it knows", ["away"] * 8, False, 0, 1),
+    ]
+    extra = 3
+    orig_auto, orig_home = D.auto_button, D.home_button
+    D.auto_button = (lambda img: {"fx": 0.361, "fy": 0.766}
+                     if img == "main" else None)
+    D.home_button = (lambda img: {"fx": 0.481, "fy": 0.945}
+                     if img == "bar" else None)
+    try:
+        for name, script, expected, presses, backs in cases:
+            screen = HomeScreen(script)
+            got = home_bot(screen).go_home()
+            good = (got == expected and screen.presses == presses
+                    and screen.back_to_list == backs)
+            print("  %-30s -> %-5s %d press(es), %d back to the list  %s"
+                  % (name, got, screen.presses, screen.back_to_list,
+                     "ok" if good else "FAILED"))
+            ok += good
+
+        # A dry run clicks nothing, so it must not then sit out its rounds
+        # and report a failure that never happened.
+        screen = HomeScreen(["bar"] * 8)
+        got = home_bot(screen, dry_run=True).go_home()
+        good = got is False and screen.presses == 1
+        print("  %-30s -> %-5s %d press(es)  %s"
+              % ("dry run presses once", got, screen.presses,
+                 "ok" if good else "FAILED"))
+        ok += good
+
+        # go_home runs in a finally. A run that ended because the capture
+        # died has to end with its own error, not with this one on top.
+        screen = HomeScreen(["bar"])
+        bot = home_bot(screen)
+        said = []
+        bot.log = said.append
+
+        def dead():
+            raise RuntimeError("capture is gone")
+
+        bot.grab = dead
+        good = (bot.go_home() is False
+                and any("capture is gone" in line for line in said))
+        print("  %-30s -> says so and carries on  %s"
+              % ("a dead capture", "ok" if good else "FAILED"))
+        ok += good
+
+        # And it happens on the bad way out of run, not only the good one.
+        screen = HomeScreen(["bar", "main"])
+        bot = home_bot(screen)
+
+        def broken():
+            raise RuntimeError("mid-run")
+
+        bot._play = broken
+        threw = False
+        try:
+            bot.run()
+        except RuntimeError:
+            threw = True
+        good = threw and screen.presses == 1
+        print("  %-30s -> error kept, %d press(es)  %s"
+              % ("a run that throws still goes home", screen.presses,
+                 "ok" if good else "FAILED"))
+        ok += good
+    finally:
+        D.auto_button, D.home_button = orig_auto, orig_home
+    return ok, len(cases) + extra
+
+
 def main():
     ok = 0
     total = 0
@@ -385,6 +601,18 @@ def main():
 
     print("Dungeon selection")
     a, b = selection_cases()
+    ok += a
+    total += b
+    print()
+
+    print("The home button")
+    a, b = home_button_cases()
+    ok += a
+    total += b
+    print()
+
+    print("The way home")
+    a, b = go_home_cases()
     ok += a
     total += b
     print()

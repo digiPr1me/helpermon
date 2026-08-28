@@ -1,26 +1,35 @@
 # The virtual environment install.bat builds. Machine-local by nature:
 # a venv hardcodes the absolute path it was created at.
 .venv/
+docs/
 
 # Learned data and local state
 userdata/
 calib.json
-"Start Helpermon.bat"
-"Start bot.bat"
-"Bot starten.bat"
+Start Helpermon.bat
+Start bot.bat
+Bot starten.bat
 
-# Image material from the game does not belong in the repository
-templates/*.png
-digits/**/*.png
+# The images the board bots read the screen with. They are crops from the
+# game, so they were held back here for a long time -- and that left the
+# Digital World Search bot unusable in a published copy, because a fresh
+# install has no userdata folder and nothing to fall back on. They ship now,
+# on purpose. Everything else from the game screen stays out: the debug
+# dumps below, and anything under userdata.
 
-# Debug output
-debug/
-debug_bot/
-debug_live/
-debug_probe/
-debug_counters/
-debug_dungeon/
-debug_skewer/
+# Debug output, and the screenshots posted for features still to be built.
+# One folder per bot and no more -- debug_dungeon, debug_explore,
+# debug_skewer, debug_summon, debug_quest, debug_passive -- named after the
+# module the bot lives in, plus debug_UI for the launcher, the wizard, About
+# and Feedback. A folder per feature was tried first and grew nine of them,
+# four holding one or two pictures each, and a frame of the Explore menu was
+# then looked for in the wrong one. debug-queue stays the inbox: what has
+# just been posted, and what belongs to a bot nobody has written yet.
+# All of it is pictures from the game screen, so none of it belongs in the
+# repository. Matched by prefix rather than named one by one, the rule
+# release.py already builds by, so a folder made in a hurry needs nobody to
+# remember this file: debug_UI was the one that got through.
+debug*/
 *.log
 
 __pycache__/

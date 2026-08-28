@@ -15,6 +15,7 @@ import time
 import cv2
 
 import capture
+import userdata
 import vision
 
 ATTEMPTS = 6
@@ -23,7 +24,7 @@ ATTEMPTS = 6
 def grab_and_calibrate():
     """Mehrere Versuche, weil ein Frame mitten in einer Animation oder waehrend
     eines Szenenwechsels nicht auswertbar ist."""
-    cap = capture.open_capture()
+    cap = capture.open_for(userdata.adb_mode())
     last = None
     for i in range(ATTEMPTS):
         img = cap.grab()

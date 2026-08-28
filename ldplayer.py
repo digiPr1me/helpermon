@@ -24,8 +24,10 @@ waits until the board is recognisable and then takes over.
 import argparse
 import glob
 import os
-import subprocess
+import re
 import time
+
+import noconsole
 
 # Fallback locations for ldconsole.exe, same idea as the ADB search in
 # capture.py. Only a fallback: capture.ld_installs finds the newest install
@@ -40,6 +42,12 @@ CONSOLE_CANDIDATES = [
 
 # How the game package is recognised when no package name was given
 PACKAGE_HINTS = ("digimon", "bandai", "bnei", "namco")
+
+# How long an emulator that was just told to start gets to produce an ADB
+# device before the window is accepted instead. A freshly launched LDPlayer
+# lists no device for the first several seconds, so anything shorter turns
+# "still booting" into "this machine has no ADB".
+WINDOW_GRACE = 45.0
 
 
 class LdError(RuntimeError):
@@ -89,8 +97,8 @@ class LdPlayer:
 
     # ------------------------------------------------------------------
     def _run(self, *args, timeout=60):
-        res = subprocess.run([self.console] + list(args), capture_output=True,
-                             timeout=timeout)
+        res = noconsole.run([self.console] + list(args), capture_output=True,
+                            timeout=timeout)
         # ldconsole liefert je nach Version cp1252 oder utf-8, deshalb tolerant
         out = (res.stdout or b"").decode("utf-8", errors="replace")
         return out.strip()
@@ -151,7 +159,7 @@ class LdPlayer:
         cap = capture.AdbCapture()
         for serial in cap.devices():
             cap.serial = serial
-            out = subprocess.run(
+            out = noconsole.run(
                 cap._cmd("shell", "pm", "list", "packages"),
                 capture_output=True, timeout=30).stdout.decode(
                     "utf-8", errors="replace")
@@ -164,6 +172,130 @@ class LdPlayer:
         return None
 
     # ------------------------------------------------------------------
+    def launcher_activity(self, package):
+        """The activity a home-screen tap on this package would open.
+
+        Asked of the system rather than guessed: the game's entry point is
+        `com.google.firebase.MessagingUnityPlayerActivity`, a name no
+        amount of reasoning about the package would have produced.
+        """
+        import capture
+        cap = capture.AdbCapture()
+        out = noconsole.run(
+            cap._cmd("shell", "cmd", "package", "resolve-activity",
+                     "--brief", package),
+            capture_output=True, timeout=30).stdout.decode(
+                "utf-8", errors="replace")
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith(package + "/"):
+                return line
+        return None
+
+    def start_app_via_adb(self, package):
+        """Start the game by its package name, through ADB alone.
+
+        Needs no ldconsole, and so works on an emulator that ships none.
+
+        `am start` on the activity the system itself resolves, because
+        `monkey` -- the obvious tool for "launch this package" -- is simply
+        not on the device any more: LDPlayer 14 runs Android 14 and answers
+        `monkey: inaccessible or not found`, exit 127. That failure was
+        invisible for a whole run, because this function used to throw the
+        output away and the caller then spent 60 s waiting for a game
+        nothing had started. Hence both the change and the checking: the
+        result of a command whose success is confirmed a minute later has
+        to be read at the moment it comes back.
+
+        `monkey` stays as the second attempt for a device that has it and
+        no `cmd package`.
+        """
+        import capture
+        cap = capture.AdbCapture()
+        activity = self.launcher_activity(package)
+        tried = []
+        if activity:
+            res = noconsole.run(cap._cmd("shell", "am", "start", "-n", activity),
+                                capture_output=True, timeout=30)
+            out = ((res.stdout or b"") + (res.stderr or b"")).decode(
+                "utf-8", errors="replace").strip()
+            # "Activity not started, intent has been delivered to currently
+            # running top-most instance" is success: the game was already
+            # in front. "Error:" is not.
+            if res.returncode == 0 and "Error" not in out:
+                self.log("started %s" % activity)
+                return activity
+            tried.append("am start: %s" % (out or "exit %d" % res.returncode))
+        else:
+            tried.append("the system could not resolve a launcher activity "
+                         "for %s" % package)
+
+        res = noconsole.run(cap._cmd("shell", "monkey", "-p", package, "-c",
+                                     "android.intent.category.LAUNCHER", "1"),
+                            capture_output=True, timeout=30)
+        out = ((res.stdout or b"") + (res.stderr or b"")).decode(
+            "utf-8", errors="replace").strip()
+        if res.returncode == 0 and "No activities found" not in out:
+            self.log("started %s through monkey" % package)
+            return package
+        tried.append("monkey: %s" % (out or "exit %d" % res.returncode))
+        raise LdError("could not start %s through ADB. %s"
+                      % (package, "; ".join(tried)))
+
+    def foreground_package(self):
+        """Package name of whichever app has focus right now, or None.
+
+        Read from the window manager rather than guessed from pixel
+        movement: `dumpsys window` says which app is in front, which is
+        better evidence than "nothing is moving, so it must be up" ever
+        was -- that read a bare emulator home screen as the finished game
+        once already.
+        """
+        import capture
+        cap = capture.AdbCapture()
+        try:
+            out = noconsole.run(
+                cap._cmd("shell", "dumpsys", "window"),
+                capture_output=True, timeout=20).stdout.decode(
+                    "utf-8", errors="replace")
+        except Exception:
+            return None
+        for line in out.splitlines():
+            if "mCurrentFocus" in line or "mFocusedApp" in line:
+                m = re.search(r"([A-Za-z][\w.]*)/[\w.$]+", line)
+                if m:
+                    return m.group(1)
+        return None
+
+    def wait_for_app(self, package, timeout=60, poll=1.5):
+        """Wait until `package` is the foreground app.
+
+        Returns the package name actually in front when it gives up, which
+        may not be `package` -- the caller decides what a mismatch means,
+        this only reports it rather than turning it into True/False and
+        losing the name of whatever is in front instead.
+        """
+        started = time.time()
+        deadline = started + timeout
+        front = None
+        said = 0.0
+        while time.time() < deadline:
+            front = self.foreground_package()
+            if front == package:
+                return front
+            # A game loading for a minute and a game that was never started
+            # look identical from outside, and the first run to hit this
+            # spent 60 s silent before saying so. Name what is in front
+            # while waiting, so the log tells the two apart as it happens.
+            waited = time.time() - started
+            if waited - said >= 10:
+                said = waited
+                self.log("waiting for %s, %s is in front, %d s of %d"
+                         % (package, front or "nothing", waited, timeout))
+            time.sleep(poll)
+        return front
+
+    # ------------------------------------------------------------------
     def wait_ready(self, index=0, timeout=180, poll=2.0, window_ok=True):
         """Wartet, bis Android hochgefahren ist und ADB ein Bild liefert.
 
@@ -172,47 +304,49 @@ class LdPlayer:
         hatten wir bei einer alten TCP Verbindung schon.
         """
         import capture
-        deadline = time.time() + timeout
+        started = time.time()
+        deadline = started + timeout
         cap = capture.AdbCapture()
-        has_adb = bool(cap.devices()) if window_ok else True
-        if not has_adb:
-            # Without ADB, it waits for the window instead. That is coarser,
-            # but it is enough, since only a usable frame is needed anyway.
-            self.log("no ADB, waiting for a usable window frame")
-            started = time.time()
-            said = 0.0
-            while time.time() < deadline:
-                try:
-                    win = capture.open_window()
-                    if win.grab() is not None:
-                        self.log("window is there after %d s"
-                                 % (time.time() - started))
-                        return "window"
-                except Exception:
-                    pass
-                waited = time.time() - started
-                # Silence for three minutes looks like a hang. Say something
-                # every ten seconds, with the number that matters.
-                if waited - said >= 10:
-                    said = waited
-                    self.log("still waiting for the emulator window, %d s of "
-                             "%d" % (waited, timeout))
-                time.sleep(poll)
-            raise LdError("no emulator window after %d s. Is the emulator "
-                          "actually starting?" % timeout)
+        said = 0.0
         while time.time() < deadline:
             for serial in cap.devices():
                 cap.serial = serial
-                booted = subprocess.run(
+                booted = noconsole.run(
                     cap._cmd("shell", "getprop", "sys.boot_completed"),
                     capture_output=True, timeout=20).stdout.decode(
                         "utf-8", errors="replace").strip()
                 if booted.startswith("1") and cap.works():
                     self.log("emulator ready, device %s" % serial)
                     return serial
-            self.log("waiting for the emulator")
+            waited = time.time() - started
+            # The window is the answer only for a machine where ADB is not
+            # coming at all, and that is not the same question as "is it
+            # here yet". Asked once at the top, one second after `launch`,
+            # it was always "no": an emulator that had just been told to
+            # start has no device yet, and the whole cold start was
+            # abandoned on a reading taken before the thing it measures
+            # could possibly exist. So the device gets WINDOW_GRACE before
+            # the window is even considered.
+            if window_ok and waited >= WINDOW_GRACE:
+                try:
+                    win = capture.open_window()
+                    if win.grab() is not None:
+                        self.log("no ADB device after %d s, but the window is "
+                                 "there" % waited)
+                        return "window"
+                except Exception:
+                    pass
+            # Silence for three minutes looks like a hang. Say something
+            # every ten seconds, with the number that matters.
+            if waited - said >= 10:
+                said = waited
+                self.log("waiting for the emulator, %d s of %d"
+                         % (waited, timeout))
             time.sleep(poll)
-        raise LdError("emulator not ready within %d s" % timeout)
+        raise LdError(
+            "no ADB device after %d s. The emulator may still be starting, "
+            "or ADB debugging is off: LDPlayer, Settings, Other settings, "
+            "ADB debugging." % timeout)
 
     def ensure_running(self, index=0, package=None, start_app=True,
                        timeout=180):

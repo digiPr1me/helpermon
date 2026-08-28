@@ -613,10 +613,17 @@ assert sim.taps.count("Claim") == 1, sim.taps
 # No button on either that this bot knows, and it goes away with one tap.
 def stage_failed():
     img = screen(popup=False, seed=8)
-    cv2.putText(img, "Stage", (int(W * 0.30), int(H * 0.13)),
-                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (40, 40, 220), 6)
-    cv2.putText(img, "Failed...", (int(W * 0.22), int(H * 0.19)),
-                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (40, 40, 220), 6)
+    # White first and thicker, red over it: the game outlines its headlines,
+    # and that outline is what tells the banner from a red background. A red
+    # stage measured 0.484 of the band red and stopped the passive helper
+    # dead until somebody looked at a screenshot.
+    for text, y in (("Stage", 0.13), ("Failed...", 0.19)):
+        x = int(W * (0.30 if text == "Stage" else 0.22))
+        for dx, dy in ((-3, 0), (3, 0), (0, -3), (0, 3)):
+            cv2.putText(img, text, (x + dx, int(H * y) + dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2.0, (255, 255, 255), 7)
+        cv2.putText(img, text, (x, int(H * y)), cv2.FONT_HERSHEY_SIMPLEX,
+                    2.0, (40, 40, 220), 6)
     # the Growth Guide panel: grey, no button anywhere on it
     cv2.rectangle(img, (int(W * 0.15), int(H * 0.21)),
                   (int(W * 0.81), int(H * 0.84)), (90, 90, 95), -1)
@@ -628,7 +635,14 @@ assert D.popup_ok(guide) is None, "found an OK button on the Growth Guide"
 assert D.claim_button(guide) is None, "found a Claim button on it"
 assert D.stage_failed(guide), "the red banner was not recognised"
 assert not D.stage_failed(screen(popup=False, seed=3)), "banner where none is"
-print("the red banner is recognised by its colour, not by its words")
+
+# A stage drawn on red is not a banner. Binary Road is one, and it is what
+# this test exists for: the band measured 0.484 red there, against 0.058 for
+# the real banner.
+red_stage = screen(popup=False, seed=3)
+red_stage[int(H * 0.05):int(H * 0.60), :] = (40, 40, 200)
+assert not D.stage_failed(red_stage), "a red background was read as the banner"
+print("the red banner is told from a red background by its white outline")
 
 
 class Failed:
@@ -688,6 +702,10 @@ def main_screen(auto=True, dim=False, radius=21):
 # would be swallowed by it. It has to be left alone.
 def failed_over_main():
     img = main_screen()
+    for dx, dy in ((-4, 0), (4, 0), (0, -4), (0, 4)):
+        cv2.putText(img, "Stage Failed",
+                    (int(W * 0.12) + dx, int(H * 0.17) + dy),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2.6, (255, 255, 255), 15)
     cv2.putText(img, "Stage Failed", (int(W * 0.12), int(H * 0.17)),
                 cv2.FONT_HERSHEY_SIMPLEX, 2.6, (40, 40, 220), 14)
     return img
@@ -869,6 +887,44 @@ assert abs(found["fy"] - D.POS_AUTO[1]) < 0.02, found
 assert D.stage_failed(as_device(failed_over_main())), "banner lost on an ADB frame"
 assert not D.stage_failed(dev), "banner where none is, on an ADB frame"
 
+
+# The third kind of frame: a window with the sidebar put away. The chrome
+# arithmetic above no longer comes out at the game's aspect there, and what
+# used to happen then was that the whole image was used as it came -- which
+# is right only while the window happens to be about the shape of the game.
+# Resized taller than that, the game is letterboxed inside the window and
+# every fraction slides by the height of the bars. It cost the passive helper
+# a session: at 730 x 1389 the bars came to 25 pixels and the hologram counter
+# slid out of its crop, so every round reported that it could not read a
+# number that was plainly on the screen.
+def without_sidebar(width, height, source=None):
+    """The same screen in a window that has no sidebar, letterboxed."""
+    img = source if source is not None else main_screen()
+    fx0, fy0, fw, fh = D.GAME_IN_WINDOW
+    h, w = img.shape[:2]
+    x, y = int(round(fx0 * w)), int(round(fy0 * h))
+    game = img[y:y + int(round(fh * h)), x:x + int(round(fw * w))]
+    canvas = np.zeros((height, width, 3), np.uint8)
+    space = height - D.WINDOW_CHROME[1]
+    gw = int(round(min(width, space * D.DEVICE_ASPECT)))
+    gh = int(round(gw / D.DEVICE_ASPECT))
+    left = (width - gw) // 2
+    top = D.WINDOW_CHROME[1] + (space - gh) // 2
+    canvas[top:top + gh, left:left + gw] = cv2.resize(
+        game, (gw, gh), interpolation=cv2.INTER_AREA)
+    return canvas
+
+
+worst = 0.0
+for shape in ((730, 1389), (657, 1198), (497, 914), (573, 1056)):
+    found = D.auto_button(without_sidebar(*shape))
+    assert found is not None, "auto button lost at %dx%d" % shape
+    worst = max(worst, abs(found["fx"] - D.POS_AUTO[0]),
+                abs(found["fy"] - D.POS_AUTO[1]))
+print("a window with no sidebar reads within %.3f of the measured position"
+      % worst)
+assert worst < 0.02, worst
+
 # A window that is not the size the constants were measured at. The chrome
 # does not scale with it -- 43 px of sidebar is 5.3 % of an 805 wide window
 # and 6.9 % of a 619 wide one -- so the frame has to be stretched back to the
@@ -904,5 +960,113 @@ print("pop-up OK: window fx %.3f fy %.3f, ADB fx %.3f fy %.3f"
 assert abs(win_ok["fx"] - dev_ok["fx"]) < 0.01, (win_ok, dev_ok)
 assert abs(win_ok["fy"] - dev_ok["fy"]) < 0.01, (win_ok, dev_ok)
 print("both sources are read with the same fractions")
+
+# ---------------------------------------------------------------------------
+# Opening the game through ADB. Both cases below cost a live run on
+# 2026-08-26 and are here so they cannot come back quietly.
+import subprocess as _subprocess
+
+import ldplayer as L
+
+
+class FakeRun(object):
+    """Stands in for noconsole.run, answering by what is being called."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        self.calls.append(cmd)
+        for needle, (code, out) in self.answers.items():
+            if needle in cmd:
+                return _subprocess.CompletedProcess(
+                    cmd, code, out.encode("utf-8"), b"")
+        return _subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+
+def with_run(fake, fn):
+    # ldplayer goes through noconsole.run now, so that a console window does
+    # not flash for every adb call under pythonw. Patched here rather than in
+    # subprocess itself, which is what the module actually calls.
+    real = L.noconsole.run
+    L.noconsole.run = fake
+    try:
+        return fn()
+    finally:
+        L.noconsole.run = real
+
+
+ld = L.LdPlayer.__new__(L.LdPlayer)
+ld.console = "ldconsole.exe"
+ld.log = lambda t: None
+PKG = "com.bandainamcoent.dgup_ww"
+ACT = PKG + "/com.google.firebase.MessagingUnityPlayerActivity"
+
+# LDPlayer 14 runs Android 14 and has no monkey: the shell answers
+# "monkey: inaccessible or not found", exit 127. That went unnoticed for a
+# whole run, because the output was thrown away and the caller then waited
+# 60 s for a game nothing had started.
+NO_MONKEY = "/system/bin/sh: monkey: inaccessible or not found"
+
+no_monkey = FakeRun({
+    "resolve-activity": (0, "priority=0 ...\n" + ACT + "\n"),
+    "am": (0, "Starting: Intent { cmp=" + ACT + " }\n"),
+    "monkey": (127, NO_MONKEY),
+})
+started = with_run(no_monkey, lambda: ld.start_app_via_adb(PKG))
+assert started == ACT, started
+assert not any("monkey" in c for c in no_monkey.calls), no_monkey.calls
+print("no monkey on the device: am start opens the game instead")
+
+# And when nothing can open it, that has to be said at once rather than
+# waited out.
+nothing_works = FakeRun({
+    "resolve-activity": (0, "No activity found\n"),
+    "monkey": (127, NO_MONKEY),
+})
+try:
+    with_run(nothing_works, lambda: ld.start_app_via_adb(PKG))
+    raise AssertionError("a failed start reported success")
+except L.LdError as err:
+    assert "monkey" in str(err) and PKG in str(err), err
+print("a start that fails says so, naming what it tried")
+
+
+# An emulator told to start a second ago lists no ADB device yet. Deciding
+# from that first reading that this machine has no ADB threw the whole cold
+# start away while LDPlayer was still booting.
+class LateDevice(object):
+    def __init__(self, after):
+        self.after = after
+        self.asked = 0
+        self.serial = None
+        self.adb = "adb"
+
+    def devices(self):
+        self.asked += 1
+        return ["emulator-5554"] if self.asked > self.after else []
+
+    def _cmd(self, *args):
+        return ["adb"] + list(args)
+
+    def works(self):
+        return True
+
+
+import capture as C
+
+late = LateDevice(after=2)
+booted = FakeRun({"getprop": (0, "1\n")})
+real_adb = C.AdbCapture
+C.AdbCapture = lambda *a, **kw: late
+try:
+    serial = with_run(booted, lambda: ld.wait_ready(0, timeout=20, poll=0.05,
+                                                    window_ok=False))
+finally:
+    C.AdbCapture = real_adb
+assert serial == "emulator-5554", serial
+assert late.asked > 2, late.asked
+print("a device that turns up late is waited for, not read once and given up on")
 
 print("all cold-start cases as expected")

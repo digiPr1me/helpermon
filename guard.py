@@ -2,35 +2,34 @@
 Shared run control for every bot: pause, resume, abort.
 
 One implementation instead of each bot inventing its own pause handling.
-Three ways to trigger a pause, all landing on the same flag:
+Two ways to trigger a pause, both landing on the same flag:
 
   - a bot's own console key (space), handled by the bot itself
   - a global hotkey (default F7), works even when the emulator window has
     focus instead of the console, because it hooks the keyboard driver
     directly instead of reading console input
-  - moving the real mouse while the bot is not driving it itself
 
-A hotkey pause needs an explicit resume, that is a deliberate stop. A
-mouse-triggered pause resumes on its own once the mouse has been still for
-`resume_after` seconds, so nobody has to remember to un-pause after just
-glancing at the screen.
+**There used to be a third, and it is gone: moving the real mouse paused
+the bot by itself.** It was written for the mode where the bot drives the
+real cursor, where a person reaching for their mouse and a bot clicking
+with it is a conflict the bot has to lose -- but it watched the cursor in
+every mode, and ADB is the default now. There the bot never puts a hand on
+the mouse, so every movement is somebody using their own machine, and a
+run spent more time paused than playing: "mouse moved, pausing" between
+two dungeon attempts, then three seconds of stillness demanded before it
+went on. The window switch for it had already been taken out, so there was
+nothing left anywhere that could turn it off either.
 
-The mouse part can be switched off from any window, through
-`userdata.mouse_pause`. The watcher asks that flag on every tick rather than
-once at the start, so the switch reaches a bot that is already running -- and
-switching it off while it holds a pause lets that pause go, otherwise the bot
-would sit paused with nothing left to resume it.
+Nothing watches the cursor any more. `cursor_pos` stays because the passive
+helper asks where the mouse is before it taps, which is a question about
+one tap and not a pause holding up a whole run.
 
-Needs the Windows API for the cursor position and the `keyboard` package for
-the global hotkey. Both are optional at runtime: without them, that part of
-the feature quietly does nothing instead of crashing a bot that only cares
-about its own console keys.
+Needs the `keyboard` package for the global hotkeys. It is optional at
+runtime: without it, they quietly do nothing instead of crashing a bot that
+only cares about its own console keys.
 """
 
-import threading
 import time
-
-import userdata
 
 try:
     import keyboard
@@ -113,48 +112,24 @@ class Stop:
 
 
 class RunControl:
-    """Global hotkey and mouse-movement watcher, layered on top of a Stop.
+    """Global pause and abort hotkeys, layered on top of a Stop.
 
-    Works with any capture object, whether or not it moves the real mouse
-    for its own clicks. A capture object that does (WindowCapture) stamps a
-    `last_bot_move` timestamp every time it does; RunControl waits out a
-    grace window after the most recent stamp instead of mistaking the bot's
-    own cursor movement for a human grabbing the mouse. A timestamp rather
-    than a plain busy flag, because a single click finishes faster than this
-    watcher is guaranteed to poll, so a boolean sampled by polling would
-    often miss the click entirely and misread it as an interruption. A
-    capture object that never touches the mouse itself (hybrid or ADB,
-    clicks go through ADB) needs no such attribute at all: any real movement
-    there is always a human, by construction, since the bot never puts its
-    own hand on the mouse in that mode.
+    F7 toggles the pause, F8 aborts, both hooked into the keyboard driver so
+    they answer while the emulator window has focus rather than the console.
+    A hotkey pause needs an explicit resume: it is somebody deciding to
+    stop, so nothing lifts it on its own.
     """
 
-    def __init__(self, control, cap=None, hotkey="f7", abort_key="f8",
-                 mouse_tolerance=15, resume_after=3.0, tick=0.2,
-                 settle_grace=0.35, log=print):
+    def __init__(self, control, hotkey="f7", abort_key="f8", log=print):
         self.control = control
-        self.cap = cap
         self.hotkey = hotkey
         self.abort_key = abort_key
-        self.mouse_tolerance = mouse_tolerance
-        self.resume_after = resume_after
-        self.tick = tick
-        self.settle_grace = settle_grace
         self.log = log
-        self._mouse_owns_pause = False
-        self._running = False
-        self._thread = None
 
     def start(self):
         self._register_hotkeys()
-        if cursor_pos() is None:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._watch_mouse, daemon=True)
-        self._thread.start()
 
     def stop(self):
-        self._running = False
         if keyboard is not None:
             try:
                 keyboard.remove_hotkey(self.hotkey)
@@ -183,7 +158,6 @@ class RunControl:
                      "program reach an elevated window." % err)
 
     def _on_hotkey_pause(self):
-        self._mouse_owns_pause = False
         paused = self.control.toggle_pause()
         self.log("    %s (hotkey %s)"
                  % ("paused" if paused else "resumed", self.hotkey))
@@ -192,75 +166,9 @@ class RunControl:
         self.control.request("hotkey %s" % self.abort_key)
         self.log("    abort requested (hotkey %s)" % self.abort_key)
 
-    # ------------------------------------------------------------------
-    def _watch_mouse(self):
-        """Poll the real cursor and pause on unexpected movement.
 
-        `baseline` is reset to None while the capture object is still within
-        `settle_grace` seconds of its own last bot-driven cursor move, so the
-        first check afterwards only records a fresh baseline instead of
-        comparing against a position from before that move. The grace window
-        has to be a little longer than one poll tick, otherwise a click that
-        finishes faster than `tick` could slip through both polls unseen and
-        get misread as a human grabbing the mouse.
-        """
-        baseline = None
-        still_since = None
-        while self._running and not self.control.is_set():
-            time.sleep(self.tick)
-            if not userdata.mouse_pause():
-                self._release_own_pause("mouse pause switched off")
-                baseline = None
-                still_since = None
-                continue
-            last_move = getattr(self.cap, "last_bot_move", None)
-            if last_move is not None and time.monotonic() - last_move < self.settle_grace:
-                baseline = None
-                continue
-            pos = cursor_pos()
-            if pos is None:
-                continue
-            if baseline is None:
-                baseline = pos
-                continue
-            moved = (abs(pos[0] - baseline[0]) > self.mouse_tolerance
-                     or abs(pos[1] - baseline[1]) > self.mouse_tolerance)
-            baseline = pos
-            if moved:
-                still_since = None
-                if not self.control.is_paused():
-                    self.log("    mouse moved, pausing")
-                    self.control.pause()
-                    self._mouse_owns_pause = True
-            elif self._mouse_owns_pause:
-                if not self.control.is_paused():
-                    self._mouse_owns_pause = False
-                elif still_since is None:
-                    still_since = time.time()
-                elif time.time() - still_since >= self.resume_after:
-                    self.control.resume()
-                    self._mouse_owns_pause = False
-                    self.log("    mouse still for %.0f s, resuming"
-                             % self.resume_after)
-
-
-    def _release_own_pause(self, why):
-        """Let go of a pause this watcher put on, and nothing else.
-
-        A hotkey pause is somebody deciding to stop, and switching off the
-        mouse watcher is not the same decision. Only the pause the mouse
-        itself caused is lifted here.
-        """
-        if not self._mouse_owns_pause:
-            return
-        self._mouse_owns_pause = False
-        if self.control.is_paused():
-            self.control.resume()
-            self.log("    %s, resuming" % why)
-
-
-def start(control, cap=None, log=print, **kwargs):
+def start(control, log=print, **kwargs):
     """Create and start a RunControl in one call."""
-    rc = RunControl(control, cap=cap, log=log, **kwargs)
+    rc = RunControl(control, log=log, **kwargs)
     rc.start()
     return rc

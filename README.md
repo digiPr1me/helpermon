@@ -7,7 +7,10 @@
 > here; what the bots need, they learn from your own screen.
 
 Three automation tools for Digimon UP running in LDPlayer, plus a launcher
-and a setup wizard.
+and a setup wizard. There is a fourth, smaller thing in the launcher window:
+a passive helper that watches the game's main screen while Helpermon is open,
+collects the bond token from your partner and keeps Auto Spend for Hologram
+Tickets running. It has no Start button, only a switch.
 
 ----------------------------------------------------------------------------------------------------------------------------------
 
@@ -37,10 +40,11 @@ py app.py                  launcher, start here
 py setup_wizard.py         setup wizard
 py dungeon.py --go         dungeon bot, command line
 py bot.py --go             minigame bot, command line
-py learn_skewer.py         learn the skewer icons standalone, same job as
-                           the wizard's Skewer step
+py learn_skewer.py         learn the skewer bot's ingredient icons, standalone
 py skewer.py --go          skewer bot, command line
 py skewer.py --probe       skewer bot, shows what it reads, clicks nothing
+py passive.py --probe      the passive helper, shows what it reads on the
+                           main screen and clicks nothing
 ```
 
 ## Legal notice
@@ -54,6 +58,33 @@ Helpermon is an independent project. It is not affiliated with, endorsed by or
 connected to the publisher of Digimon UP in any way, and it contains no code,
 text or image material from the game. Product names and trademarks belong to
 their respective owners.
+
+## Supporter features
+
+Most of Helpermon is free, and the bots that were free stay free. A few of
+the newer ones ask for a supporter code, which comes with a donation on
+Ko-fi. The code is typed in once, on the About page or when one of those
+bots is started; it is checked on the machine itself, nothing is sent
+anywhere, and it survives an update because it is kept with the learned
+data rather than in the program folder.
+
+The code comes back by email, to the address the donation came from -- Ko-fi
+asks for one as part of the payment, so there is nothing extra to fill in and
+nothing to write in the public message. It is sent by hand, so give it a day.
+
+Giving a code back -- handing the machine on, or moving it to another one --
+is a command rather than a button, in a terminal in the Helpermon folder:
+
+    py unlock.py              what this machine has, and where it is kept
+    py unlock.py --forget     give the code back and lock the features again
+
+`--forget` prints the code once on the way out. Nothing shows it again
+afterwards, so copy it before closing the window.
+
+It is worth being straight about what that is. This is open source: the
+check is a few lines of Python in `unlock.py`, and anybody who wants past
+it can walk past it. It is a request, not a lock. If Helpermon saves you
+an evening a week, the code is how you say so.
 
 ## No third-party image material
 
@@ -116,15 +147,16 @@ The **skewer bot** is the opposite case: the ingredient icons are pictures, not
 text, so language does not matter, but nothing about them can be derived from
 colour or position the way the dungeon bot's buttons can. The twelve icons must
 be learned once, against your own screen, before `skewer.py --go` has anything
-to match against. The wizard's **Skewer** step does that; `learn_skewer.py` is
-the same job as a standalone window, kept for working on the reader itself.
+to match against. `learn_skewer.py` does that, as a standalone window; it has
+no page of its own in the launcher or the setup wizard, both of which cover
+only the bots on the launcher's sidebar.
 
 ## Architecture
 
 | File | Role |
 |---|---|
-| `app.py` | launcher: all three bots, setup status, emulator control |
-| `setup_wizard.py` | learns object images, digits, banner texts, skewer icons |
+| `app.py` | launcher: the sidebar's bots, setup status, emulator control |
+| `setup_wizard.py` | learns object images, digits, banner texts |
 | `engine.py` | minigame core loop, emits events instead of printing |
 | `bot.py` | console front end for the minigame core |
 | `gui.py` | standalone window for the same core, with every tuning knob. The launcher runs this bot itself; this is the way in for the advanced settings |
@@ -133,7 +165,7 @@ the same job as a standalone window, kept for working on the reader itself.
 | `learn_skewer.py` | learns the skewer bot's ingredient icons |
 | `vision.py` | calibration, object detection, digit reading, banners |
 | `capture.py` | screen sources and input, window and ADB |
-| `guard.py` | shared pause/abort signal, global hotkey, mouse-move guard |
+| `guard.py` | shared pause/abort signal and the global F7/F8 hotkeys |
 | `planner.py` | picks one next action, priced in Bits |
 | `router.py` | Dijkstra pathfinding over the visible board |
 | `world.py` | global map, scroll offset, position bookkeeping |
@@ -141,7 +173,9 @@ the same job as a standalone window, kept for working on the reader itself.
 | `tracker.py` | plausibility checks on counter values |
 | `learning.py` | learning logic behind the wizard |
 | `userdata.py` | where learned data is stored, and the settings two processes share |
-| `widgets.py` | Tk pieces more than one window needs, currently the mouse-pause switch |
+| `widgets.py` | Tk pieces more than one window needs: the ADB switch and the log box |
+| `feedback.py` | builds a feedback report and sends it to Discord, or saves it locally if that fails |
+| `version.py` | the one place the version number is written down |
 | `ldplayer.py` | starts the emulator and the game, LDPlayer only, needs ADB for the package name |
 | `launcher.py` | starts the game by finding and clicking its icon, any emulator, no ADB |
 | `release.py` | builds a copy without game-derived images |
@@ -149,7 +183,6 @@ the same job as a standalone window, kept for working on the reader itself.
 | `remove.bat` | uninstaller. Two questions, because the packages and the learned images are not the same decision |
 | `make_shortcut.py` | writes the starter and the desktop shortcut |
 | `.github/ISSUE_TEMPLATE/` | the two issue forms and the links beside them. The URLs in `config.yml` carry a placeholder owner that has to be replaced once |
-| `docs/images/` | the screenshots `INSTALL.md` shows. The only folder in the tree an image may live in, and its `READ_ME.txt` says why |
 
 Diagnostics: `bench.py`, `calibrate.py`, `counters_probe.py`, `dump_rois.py`,
 `figure_probe.py`, `find_adb.py`, `grab_screen.py`, `learn_digits.py`,
@@ -168,8 +201,11 @@ py test_dungeon_flow.py    dungeon loop and dungeon selection
 py test_skewer_flow.py     skewer loop, undo/mismatch, round-end
 py test_wake_flow.py       every screen that ever stopped a cold start
 py test_launcher.py        icon learning, waiting for the emulator
-py test_guard.py           the mouse pause and the switch that turns it off
+py test_guard.py           the pause flag, the hotkeys, and that no bot
+                           watches the mouse any more
 py test_learning.py        wizard logic against saved screenshots
+py test_feedback.py        building a report, and the two ways it can leave
+                           the machine
 ```
 
 ## Guiding principle
@@ -283,10 +319,12 @@ actions straight.
 
 ### Speed
 
-Measured per screenshot: ADB PNG about 430 ms, ADB raw about 470 ms, window
-capture about 9 ms. Raw is no gain because transferring 8 MB costs more than PNG
-encoding saves. The window capture is therefore the default and the whole reason
-the bots feel responsive.
+Measured per screenshot: ADB PNG about 430-470 ms, ADB raw a little faster,
+window capture about 9 ms. ADB is the default anyway: a window capture can go
+wrong in ways that cost nothing and say nothing, see "One switch for screen
+and clicks" below. `capture.AdbCapture` benchmarks raw against PNG once per
+machine and keeps the faster one; the result is cached so later starts do not
+pay for the measurement again.
 
 Pacing is adaptive. All wait times hang off one factor; after three clean
 actions it shrinks by 10 percent, a retry nudges it back slightly, a real
@@ -443,23 +481,42 @@ and would break on every game update. The list is longer than the window, so the
 number of cards visible at the bottom tells it how many to play from the top for
 the two views to complement each other exactly.
 
-### Input without ADB
+### One switch for screen and clicks
 
-ADB only ever handled input; frames always came from the window. Without it,
-clicks go through `pydirectinput`, swipes are a held mouse moved in about twelve
-steps, and back is Escape. All screen sources expose the same `grab`, `tap`,
-`swipe`, `back` and `focus`, checked by `test_capture.py`, because the bots used
-to reach through to ADB directly in five places.
+Two operating modes, not three. One switch, at the top of every window a bot
+runs in, picks between them for frames *and* clicks together:
 
-Trade-off: the mouse is occupied and the window must stay in the foreground.
+| Switch | Frames | Clicks | Trade-off |
+|---|---|---|---|
+| ADB (default) | ADB | ADB | ~400 ms per frame. The window may sit behind other windows, be minimised, and colour is unaffected by night light or an HDR profile |
+| off | screen capture | `pydirectinput` | ~9 ms per frame, but the window must stay visible, unobscured and in the foreground, and the screen must not sleep |
 
-And it must stay awake. While the display sleeps, screen capture keeps
-returning the last picture that was drawn, for minutes, with no error
-anywhere -- a bot reading that clicks into a screen from long ago. ADB does
-not have that problem. `capture.frames_agree` compares a window frame against
-an ADB frame of the same moment, 0.99 when they match against 0.04 when the
-window is one screen behind, and hybrid mode drops back to plain ADB rather
-than trust a picture that is not current.
+There used to be a third way, frames from the window with clicks via ADB,
+kept because a window capture is far faster than an ADB one. It needed a
+coordinate conversion between window pixels and device pixels, and it
+rested on an assumption that turned out not to hold: that a window capture
+fails only when the window is not in the foreground. Measured directly
+(two Tk windows of a known colour, the same `mss` `capture.WindowCapture`
+uses): a window that is merely unfocused is captured correctly, but one
+*obscured* by another window returns that other window's picture instead,
+and a *minimised* one returns black with no error anywhere. Night light or
+any colour profile tints every frame, and every threshold in `dungeon.py`
+is a threshold on colour. ADB does not have any of those failure modes and
+stays fresh while the window is minimised.
+
+So there is no silent fall back from ADB to the window any more, in either
+direction: with the switch on, a run that cannot reach ADB stops and says
+so (`capture.require_adb`) rather than quietly reading a stale or wrong
+picture. The switch itself is a file in the data folder, the same pattern
+as the one the mouse-movement pause used to have, because the launcher, the
+setup wizard and a bot started from a console are separate processes and a
+switch that reached only one of them would look broken.
+
+Without ADB, clicks go through `pydirectinput`, swipes are a held mouse
+moved in about twelve steps, and back is Escape. Both screen sources expose
+the same `grab`, `tap`, `swipe`, `back`, `focus` and a `moves_mouse` flag,
+checked by `test_capture.py`, because the bots used to reach through to ADB
+directly in several places.
 
 ### One vocabulary for two kinds of frame
 
@@ -497,7 +554,7 @@ and Diagnostics, and is reached by running `py setup_wizard.py`.
 ### Saying what a bot needs
 
 Each bot has a short list of things that have to be true before it can do
-anything -- the game open, the Digital World Search board on screen, the Night
+anything -- the game open, Digimon UP on its plain main screen, the Night
 Market at its own main menu. They are kept in one table in `app.py` and shown
 twice: in a box near the top of the bot's page, and in a dialog the first time
 that bot is started. Every line in that list is a way for a bot to sit there
@@ -515,20 +572,35 @@ It also says the thing that is easy to meet and hard to explain afterwards:
 LDPlayer puts up an error of its own when a lot is driven through ADB in one
 sitting. That is the emulator complaining, not the game.
 
-### The mouse-movement pause
+### The mouse-movement pause, and why it is gone
 
 A bot that drives the real mouse and a person who wants their mouse back is a
-conflict the bot has to lose. `guard.py` watches the cursor and pauses on any
-movement it did not make itself, resuming a few seconds after the mouse goes
-still.
+conflict the bot has to lose, so `guard.py` used to watch the cursor and pause
+on any movement it had not made itself, going on again a few seconds after the
+mouse went still.
 
-Turning that off is a switch at the top right of the windows a bot runs in --
-not on the setup windows, where nothing is driving the mouse. It is a file in
-the data folder rather than a setting inside one window, because the launcher,
-the wizard and a bot started from a console are separate processes and a
-switch that reached only one of them would look broken. The watcher asks on
-every tick, so the toggle also reaches a bot that is already running -- and
-switching it off while it is holding a pause releases that pause, rather than
-leaving the bot stopped with nothing left to resume it. A pause a person asked
-for with the hotkey is left alone; that was a decision, not a twitch of the
-mouse.
+It was built for the mode where the bot drives the cursor, and it watched in
+every mode. ADB is the default now, and there the bot never puts a hand on the
+mouse: every movement is somebody using their own machine, and the pause fired
+at all of them. A dungeon run reads like this --
+
+```
+21:12:14      mouse moved, pausing
+21:12:53      mouse still for 3 s, resuming
+21:12:53    resuming, checking the screen first
+21:12:55      mouse moved, pausing
+```
+
+-- three seconds of stillness demanded, and the screen re-read every time,
+between two attempts of a bot that was not touching the mouse at all. The
+checkbox for it had already been taken out of every window, because a switch
+offering to turn off the one thing that gets a hand out from under a running
+bot is an invitation rather than a setting; so by then there was nothing left
+anywhere that could stop it either.
+
+The watcher is gone, and with it `userdata.mouse_pause`, `DGUP_MOUSE_PAUSE`
+and `WindowCapture.last_bot_move`, the timestamp whose only reader it was.
+What is left is F7 and F8: the pause is something a person asks for now.
+Without ADB, that means the mouse belongs to the bot until you press F7, and
+the dialogs say so. `test_guard.py` asserts the watcher stays gone, rather
+than only that it is absent today.

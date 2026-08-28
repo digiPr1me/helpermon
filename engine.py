@@ -25,9 +25,11 @@ import cv2
 
 import actions
 import capture
+import explore
 import guard
 import planner as planner_mod
 import tracker
+import userdata
 import vision
 import world as world_mod
 
@@ -63,7 +65,10 @@ class Settings:
         self.min_pace = 0.60
         self.adaptive = True
         self.calib_frames = 5
-        self.capture_mode = "hybrid"  # hybrid or ADB
+        # None means the stored switch (userdata.adb_mode()) decides; True
+        # or False overrides it for this run, which is what the "Check
+        # calibration" button in gui.py needs to test the other mode.
+        self.adb = None
         self.screencap = "png"
         self.bit_paw = planner_mod.BIT_PAW
         self.bit_claw = planner_mod.BIT_CLAW
@@ -73,7 +78,7 @@ class Settings:
         self.row_slack = planner_mod.ROW_SLACK
         self.bit_left_penalty = planner_mod.BIT_LEFT_PENALTY
         self.bit_middle_bias = planner_mod.BIT_MIDDLE_BIAS
-        self.debugdir = "debug_bot"
+        self.debugdir = "debug_explore"
         # Cold start. Starts the emulator and the game itself, then waits
         # until the minigame is visible. The bot deliberately does not
         # navigate menus, that is the most fragile part and changes with
@@ -82,7 +87,12 @@ class Settings:
         self.ld_index = 0
         self.ld_package = None
         self.wait_for_board = 0  # seconds, 0 means do not wait
-        self.mouse_guard = True  # auto-pause on unexpected real mouse movement
+        self.hotkeys = True  # global F7/F8 pause and abort keys
+        # Open the board from the main screen and go back there at the end.
+        # Off means the old behaviour: the player navigates there by hand,
+        # the bot takes over wherever it is started, and wait_for_board (if
+        # set) is what waits for that.
+        self.navigate = True
         for key, value in kw.items():
             if not hasattr(self, key):
                 raise TypeError("unknown setting %r" % key)
@@ -169,15 +179,21 @@ def board_visible(img, templates):
     return calib, vision.find_figure(img, calib, templates)
 
 
-def wait_for_board(cap, templates, seconds, emit, stop=None, poll=1.5):
+def wait_for_board(cap, templates, seconds, emit, stop=None, poll=1.5,
+                   settings=None):
     """Wait until the minigame is visible.
 
     This covers the cold start without the bot having to operate menus. You
     click your way through daily rewards and events yourself, and the bot
     takes over the moment the board appears.
+
+    What it gives up on is kept, for the same reason find_start keeps its
+    frame: a wait that ran out says nothing about whether the board was
+    never opened or was opened and not recognised.
     """
     deadline = time.time() + seconds
     said = False
+    last = None
     while time.time() < deadline:
         if stop is not None and stop.is_set():
             return False
@@ -187,6 +203,7 @@ def wait_for_board(cap, templates, seconds, emit, stop=None, poll=1.5):
             emit({"art": WARN, "text": "no frame: %s" % err})
             time.sleep(poll)
             continue
+        last = img
         calib, figure = board_visible(img, templates)
         if calib and figure:
             emit({"art": INFO, "text": "minigame recognised, taking over"})
@@ -196,54 +213,54 @@ def wait_for_board(cap, templates, seconds, emit, stop=None, poll=1.5):
             said = True
         time.sleep(poll)
     emit({"art": WARN, "text": "minigame not recognised within %d s" % seconds})
+    if settings is not None and last is not None:
+        path = _save_debug(settings, "no_board", last, emit)
+        if path:
+            emit({"art": WARN, "text": "the last frame is in %s" % path})
     return False
 
 
 def open_capture(settings, emit=print):
-    """Frame source and input.
+    """Frame source and input, chosen by the global switch (userdata.adb_mode)
+    unless settings.adb overrides it for this one call.
 
-      hybrid   frames from the window, clicks via ADB. Fast and the mouse
-               stays free
-      window   everything via the window, without ADB. The mouse is then
-               blocked and the window must stay visible
-      ADB      everything via ADB, slow but insensitive
+      ADB      frames and clicks both via ADB, insensitive to window state
+      window   everything via the window. The mouse is then blocked and the
+               window must stay visible and unobscured
     """
-    if settings.capture_mode == "window":
-        cap = capture.open_window()
-    elif settings.capture_mode == "hybrid":
-        try:
-            cap = capture.open_hybrid(vision.calibrate)
-        except Exception as err:
-            emit({"art": WARN, "text": "hybrid not possible (%s), falling back to window mode without ADB" % err})
-            cap = capture.open_window()
-        if isinstance(cap, capture.AdbCapture):
-            # open_hybrid falls back to pure ADB if the coordinate
-            # conversion fails. Without ADB that is not an option here.
-            try:
-                cap = capture.open_window()
-            except Exception:
-                pass
-    else:
-        cap = capture.open_capture()
-    if settings.screencap != "auto":
+    adb = userdata.adb_mode() if settings.adb is None else settings.adb
+    cap = capture.open_for(adb)
+    if settings.screencap != "auto" and not cap.moves_mouse:
         cap.method = settings.screencap
     return cap
 
 
 def find_start(cap, templates, settings, emit, stop=None):
-    """Wait for a calm frame in which geometry, figure and paws are certain."""
+    """Wait for a calm frame in which geometry, figure and paws are certain.
+
+    Whatever it gives up on, it keeps the frame. A run that ends here used
+    to leave nothing behind but "no portrait-format card found", which says
+    what the reader missed and not what was on the screen -- and the two
+    answers ("the board was not open" against "the board was open and the
+    reader could not see it") need completely different work. The frame is
+    the only thing that tells them apart afterwards.
+    """
     samples = []
     calib = None
+    last = None
+    ever = False
     for _ in range(30):
         if stop is not None and stop.is_set():
             return None
         img = cap.grab()
+        last = img
         try:
             fresh = vision.calibrate(img)
         except vision.CalibrationError as err:
             emit({"art": WARN, "text": "calibration not possible yet: %s" % err})
             time.sleep(0.4)
             continue
+        ever = True
         if vision.banner_visible(img, fresh):
             emit({"art": INFO, "text": "banner visible, waiting"})
             time.sleep(0.6)
@@ -254,6 +271,7 @@ def find_start(cap, templates, settings, emit, stop=None):
             continue
 
         counters, img = merge_counters(cap, calib)
+        last = img
         figure = vision.find_figure(img, calib, templates)
         if figure and counters.get("paws") is not None:
             img, grid, _ = quiet_frame(cap, calib, templates)
@@ -262,6 +280,16 @@ def find_start(cap, templates, settings, emit, stop=None):
         emit({"art": WARN, "text": "waiting for a calm frame, figure %s, paws %s"
               % (figure and figure["how"], counters.get("paws"))})
         time.sleep(0.5)
+
+    if not ever:
+        emit({"art": WARN, "text":
+              "the minigame board was never on the screen. Open Digital "
+              "World Search in the game yourself, wait for the board, then "
+              "start again."})
+    if last is not None:
+        path = _save_debug(settings, "no_start", last, emit)
+        if path:
+            emit({"art": WARN, "text": "the frame it gave up on is in %s" % path})
     return None
 
 
@@ -280,13 +308,30 @@ def run(settings, emit, stop=None):
     cap = open_capture(settings, emit)
 
     control = None
-    if settings.mouse_guard:
-        control = guard.start(stop, cap=cap,
+    if settings.hotkeys:
+        control = guard.start(stop,
                               log=lambda t: emit({"art": INFO, "text": t}))
 
+    nav = None
+    if settings.navigate:
+        nav = explore.Nav(cap, dry_run=settings.dry_run, control=stop,
+                          log=lambda t: emit({"art": INFO, "text": t}))
+
     try:
+        # open_board is inside the try, not before it, unlike the sketch in
+        # PLAN_WORLD_SEARCH_NAV.md 5.4: a run that fails to reach the board
+        # still needs its way back and its hotkeys unregistered, the same
+        # "every way out, not only the good one" rule the plan states for
+        # go_home and leave_summons elsewhere. A return before the finally
+        # would skip both.
+        if nav is not None:
+            if not nav.open_board() and not settings.dry_run:
+                emit({"art": WARN, "text": "could not open the Digital World Search"})
+                return None
         return _run_loop(settings, emit, stop, cap)
     finally:
+        if nav is not None:
+            nav.leave_board()
         if control:
             control.stop()
 
@@ -298,7 +343,8 @@ def _run_loop(settings, emit, stop, cap):
         return None
 
     if settings.wait_for_board:
-        if not wait_for_board(cap, templates, settings.wait_for_board, emit, stop):
+        if not wait_for_board(cap, templates, settings.wait_for_board, emit,
+                              stop, settings=settings):
             return None
 
     started = find_start(cap, templates, settings, emit, stop)

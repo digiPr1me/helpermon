@@ -16,9 +16,6 @@ What has to be learned
               measured 12.5 against 13.5
   digits      labelled digit images
   banners     exclamation mark and texts
-  skewer      the twelve ingredient icons of the cooking minigame, cut from
-              the 4x3 grid. Only counted here; the cutting itself lives in
-              skewer.py, which owns the layout
 """
 
 import os
@@ -34,10 +31,6 @@ NEEDED_TEMPLATES = ["ticket_orange", "ticket_green", "ticket_pink", "claw",
                     "paw", "fireball", "pyramid", "banner_badge",
                     "banner_text_move"]
 OPTIONAL_TEMPLATES = ["banner_text_insufficient", "arrow", "figure"]
-
-# The skewer bot's ingredient icons live in the same learned-templates folder,
-# behind this prefix. skewer.py writes them, this module only counts them.
-SKEWER_PREFIX = "skewer_"
 
 LABELS = {
     "ticket_orange": "orange ticket, the valuable currency",
@@ -79,52 +72,16 @@ def template_sources():
     return out
 
 
-def skewer_cell_count():
-    """How many ingredient icons there are, read from skewer.py's grid so the
-    number stays in one place. Imported late: learning.py has to stay
-    importable without it."""
-    try:
-        import skewer
-        return len(skewer.GRID_COLS_FX) * len(skewer.GRID_ROWS_FY)
-    except Exception:
-        return 0
-
-
-def skewer_status():
-    """Which ingredient icons are learned.
-
-    The setup overview has to count these. Without it setup reports "done"
-    while the skewer bot cannot name a single ingredient.
-
-    Counted, not matched against a name list: learn_skewer.py lets you type
-    your own name for every icon, and skewer.py looks up whatever
-    skewer_*.png it finds. One icon per grid cell is the condition; what they
-    are called is the player's business.
-    """
-    directory = userdata.templates_dir(create=False)
-    have = set()
-    if os.path.isdir(directory):
-        for fname in os.listdir(directory):
-            if fname.startswith(SKEWER_PREFIX) and fname.endswith(".png"):
-                have.add(fname[len(SKEWER_PREFIX):-len(".png")])
-    total = skewer_cell_count()
-    return {"have": sorted(have), "total": total,
-            "ready": bool(total) and len(have) >= total}
-
-
 def status():
     """What is learned and what is missing. Basis for the progress display.
 
-    `fertig` stays what it always was, the readiness of the board minigame.
-    The skewer bot is reported separately under skewer_*, because either bot
-    can be usable while the other is not.
+    `fertig` is the readiness of the board minigame.
     """
     templates = vision.load_templates()
     digits = vision.digit_stats().get(vision.DIGIT_SET, {})
     missing_digits = [d for d in "0123456789" if digits.get(d, 0) == 0]
     thin_digits = [d for d, n in sorted(digits.items()) if 0 < n < 4]
     sources = template_sources()
-    skewer = skewer_status()
     return {
         "ort": userdata.describe(),
         "quellen": sources,
@@ -137,9 +94,6 @@ def status():
         "ziffern_duenn": thin_digits,
         "fertig": not [n for n in NEEDED_TEMPLATES if n not in templates]
                   and not missing_digits,
-        "skewer_have": skewer["have"],
-        "skewer_total": skewer["total"],
-        "skewer_ready": skewer["ready"],
     }
 
 

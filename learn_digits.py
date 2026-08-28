@@ -17,6 +17,7 @@ import os
 import cv2
 
 import capture
+import userdata
 import vision
 
 ROIS = ["top_orange", "top_green", "top_pink", "paws", "claws", "fireballs", "meters"]
@@ -29,7 +30,8 @@ def main():
     ap.add_argument("--image", help="statt Emulator ein gespeichertes Bild")
     args = ap.parse_args()
 
-    img = cv2.imread(args.image) if args.image else capture.open_capture().grab()
+    img = cv2.imread(args.image) if args.image \
+        else capture.open_for(userdata.adb_mode()).grab()
     if img is None:
         raise SystemExit("Bild nicht lesbar")
     calib = vision.calibrate(img)

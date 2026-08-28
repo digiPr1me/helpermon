@@ -130,40 +130,76 @@ def set_only_learned(value):
     return only_learned()
 
 
-# The mouse-movement pause, on or off for the whole program.
-#
-# A flag file for the same reason as ONLY_FLAG above: the launcher, the wizard
-# and a bot started from a console are three processes, and a switch that only
-# reached one of them would be a switch that appears to do nothing. Reading
-# the file rather than remembering it is what makes the toggle in one window
-# take effect in another, and in a bot that is already running.
-#
-# The file means "off", so that the absence of it -- a fresh install, a
-# deleted data folder -- is the safe answer: the pause is on unless somebody
-# has said otherwise.
-MOUSE_PAUSE_FLAG = "mouse_pause_off.flag"
+# The mouse-movement pause is gone, and with it `mouse_pause` and
+# DGUP_MOUSE_PAUSE. It lost its checkbox first, because a switch offering to
+# turn off the one thing that got a hand out from under a running bot was an
+# invitation rather than a setting -- and then the pause itself, because ADB
+# became the default and there the bot never touches the mouse: every
+# movement was a person using their own machine, and a run spent it pausing.
+# See guard.py. A flag file left behind by the old checkbox is not read by
+# anything.
 
 
-def mouse_pause():
-    """Should a bot pause when the real mouse moves?"""
-    if os.environ.get("DGUP_MOUSE_PAUSE") in ("0", "1"):
-        return os.environ["DGUP_MOUSE_PAUSE"] == "1"
+# The global "Use ADB" switch: frames and clicks both, on or off together.
+#
+# A flag file, like ONLY_FLAG above, and for the same reason: the
+# launcher, the setup wizard, the minigame window and a bot started from a
+# console are separate processes, and a switch reaching only one of them
+# looks broken rather than off.
+#
+# The file means "off", so its absence -- a fresh install, a deleted data
+# folder -- gives ADB, the safer default: a window that has to stay visible
+# and unobscured breaks in more ways than a few hundred milliseconds per
+# frame costs.
+ADB_OFF_FLAG = "adb_off.flag"
+
+
+def adb_mode():
+    """True means frames and clicks both go through ADB."""
+    if os.environ.get("DGUP_ADB_MODE") in ("0", "1"):
+        return os.environ["DGUP_ADB_MODE"] == "1"
     try:
-        return not os.path.exists(os.path.join(data_dir(), MOUSE_PAUSE_FLAG))
+        return not os.path.exists(os.path.join(data_dir(), ADB_OFF_FLAG))
     except Exception:
-        # No writable folder is not a reason to let a bot drive over
-        # somebody's hand. On is the safe answer.
         return True
 
 
-def set_mouse_pause(value):
-    path = os.path.join(data_dir(), MOUSE_PAUSE_FLAG)
+def set_adb_mode(value):
+    path = os.path.join(data_dir(), ADB_OFF_FLAG)
     if value and os.path.exists(path):
         os.remove(path)
     elif not value:
         with open(path, "w") as fh:
-            fh.write("Bots do not pause when the mouse moves.\n")
-    return mouse_pause()
+            fh.write("Helpermon reads the window and drives the real mouse "
+                     "instead of ADB.\n")
+    return adb_mode()
+
+
+# Which of ADB's two screenshot methods, raw or png, benchmark() found
+# faster on this machine. Cached so that only the first process to ever
+# grab an ADB frame here pays for the measurement -- benchmarked at roughly
+# a second, and repeating that on every process start, including a short
+# CLI call, would tax exactly the run it is meant to speed up.
+SCREENCAP_METHOD_FILE = "screencap_method.flag"
+
+
+def cached_screencap_method():
+    """"raw" or "png" if benchmark() has measured this machine before,
+    otherwise None."""
+    try:
+        with open(os.path.join(data_dir(), SCREENCAP_METHOD_FILE)) as fh:
+            value = fh.read().strip()
+    except Exception:
+        return None
+    return value if value in ("raw", "png") else None
+
+
+def set_cached_screencap_method(value):
+    try:
+        with open(os.path.join(data_dir(), SCREENCAP_METHOD_FILE), "w") as fh:
+            fh.write(value)
+    except Exception:
+        pass
 
 
 def describe():

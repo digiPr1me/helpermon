@@ -72,6 +72,22 @@ def main():
     w2.observe(g3, dict(row=1, col=1, how="t"))
     ok.append(("collected items stay gone", w2.at(2, 1) is None))
 
+    # The names shown in the two windows. They are meant to be edited, and
+    # the keys beside them are template filenames that are not -- so this
+    # checks that a rename stayed on the right side of that line: an entry
+    # for every item, no entry for anything that is not one (a mistyped key
+    # would silently show the fallback instead), and no empty name, which
+    # would draw a tick box with nothing beside it.
+    labels = world_mod.WANTED_LABEL
+    ok.append(("every item has a name",
+               all(key in labels for key in world_mod.ALL_WANTED)))
+    ok.append(("no name for something that is not an item",
+               set(labels) <= set(world_mod.ALL_WANTED)))
+    ok.append(("no name is empty",
+               all(str(text).strip() for text in labels.values())))
+    ok.append(("an item with no entry falls back to its key",
+               world_mod.wanted_label("ticket_blue") == "ticket blue"))
+
     for name, good in ok:
         print("%-42s %s" % (name, "ok" if good else "FAILED"))
     print("\n%d of %d ok" % (sum(1 for _, g in ok if g), len(ok)))

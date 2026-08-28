@@ -1,35 +1,60 @@
 """
-Screen sources and input. Three ways, all with the same interface.
+Screen sources and input. Two ways, all with the same interface.
 
-  window   frames by screen capture, input by mouse and keyboard. No ADB needed
-  hybrid   frames by screen capture, clicks via ADB. Fast and the mouse stays free
-  ADB      everything through ADB. Slow but insensitive to window state
+  ADB      frames and clicks both via ADB. The default: the window may sit
+           behind other windows or be minimised, the real mouse stays free,
+           colour is unaffected by night light or an HDR profile. Costs
+           roughly 400 ms per frame against 9 ms for a window capture.
+  window   frames by screen capture, input by mouse and keyboard. No ADB
+           needed, but the window must stay visible, unobscured and in the
+           foreground, and it drives the real mouse.
 
-Frames always come from the window where possible, measured 9 ms against 430 ms
-for ADB. ADB only ever handled input.
+Measured directly, with two Tk windows of known colour and the same mss
+WindowCapture uses (see PLAN_ADB_ONLY.md, section 0, not shipped publicly):
+mss photographs the *screen rectangle*, not the window. A window covered by
+another one returns that other window's picture; a minimised window returns
+black, pygetwindow reporting its position as -32000,-32000. Neither raises
+an error. Focus alone is not the trigger -- a visible, unfocused window is
+captured correctly -- but obscured, minimised, on another virtual desktop,
+moved off a disabled second monitor, or behind a sleeping or locked screen
+all fail silently, and so does night light or any colour profile: every
+threshold in dungeon.py is a colour threshold. ADB was measured immune to
+all of it and stays fresh while the window is minimised (frame-to-frame
+motion 0.009 against 0.014 visible, the same scene).
 
-All classes provide `grab`, `tap`, `swipe`, `back` and `focus`. That matters
-because the bots used to reach through to ADB directly in several places, and a
-missing method would only have surfaced during a run.
+There used to be a third way, frames from the window with clicks via ADB,
+kept because a window capture is far faster. It needed a conversion between
+window and device coordinates in one direction or the other, and that
+conversion is the trap this module no longer has: image and click now
+always come from the same source, so no coordinate ever needs converting.
+
+All classes provide `grab`, `tap`, `swipe`, `back` and `focus`, plus a
+`moves_mouse` attribute saying whether that class drives the real cursor.
+That matters because the bots used to reach through to ADB directly in
+several places, and a missing method would only have surfaced during a run.
 """
 
 import glob
 import os
 import re
 import struct
-import subprocess
 import time
 
 import cv2
 import numpy as np
+
+import noconsole
+import userdata
 
 
 class CaptureError(RuntimeError):
     pass
 
 
-# LDPlayer ships ADB but does not put it on the PATH. So it is searched for
-# here. A custom path can be set via the DGUP_ADB environment variable.
+# LDPlayer ships ADB but does not put it on the PATH, so it has to be found.
+# These are the last resort, after the registry and after every drive has
+# been looked at; they only still earn their place for an install Windows has
+# no record of. DGUP_ADB, an environment variable, overrides the lot.
 ADB_CANDIDATES = [
     r"C:\LDPlayer\LDPlayer9\adb.exe",
     r"C:\LDPlayer\LDPlayer64\adb.exe",
@@ -68,6 +93,13 @@ GAME_IN_WINDOW = (4 / 805.0, 40 / 1390.0, 758 / 805.0, 1348 / 1390.0)
 #
 # The threshold sits in the middle of that gap. Without the chrome removed
 # the same pairs score 0.43 against 0.24 and cannot be told apart at all.
+#
+# Nothing in this module calls frames_agree any more: it was what the third,
+# mixed way (window frames, ADB clicks) used to tell a stale window frame
+# from a live one before trusting it for a click. With image and click
+# always from the same source now, the question it answered does not come
+# up -- it stays, with its test, as the record of why that mixed way needed
+# watching in the first place.
 FRAMES_AGREE_MIN = 0.5
 
 
@@ -188,15 +220,94 @@ def _ld_version(path):
     return max((int(n) for n in found), default=0)
 
 
-def ld_installs(filename, roots=("C:\\", "D:\\")):
+def fixed_drives():
+    """Every drive letter that is there, so a search is not two guesses.
+
+    It used to look on C: and D:. A player with LDPlayer on E: was told no
+    ADB could be found, which was true only of the two places looked at.
+    """
+    import ctypes
+    DRIVE_FIXED = 3
+    try:
+        bits = ctypes.windll.kernel32.GetLogicalDrives()
+        out = []
+        for i in range(26):
+            if not bits >> i & 1:
+                continue
+            letter = "%s:\\" % chr(ord("A") + i)
+            # Fixed disks only. A network drive that is no longer there can
+            # make a search hang for seconds, and nobody installs an emulator
+            # on a DVD.
+            if ctypes.windll.kernel32.GetDriveTypeW(letter) == DRIVE_FIXED:
+                out.append(letter)
+        return out or ["C:\\"]
+    except Exception:
+        return ["C:\\", "D:\\"]
+
+
+def ld_from_registry():
+    """Install folders Windows itself has on file for LDPlayer.
+
+    InstallLocation is the field meant for this and LDPlayer leaves it
+    empty, measured on LDPlayer 14. What it does fill in is the uninstaller
+    and the icon, both of which sit in the install folder, so the folder is
+    read off those instead.
+    """
+    import winreg
+    roots = [(winreg.HKEY_LOCAL_MACHINE,
+              r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_LOCAL_MACHINE,
+              r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_CURRENT_USER,
+              r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")]
+    found = []
+    for hive, path in roots:
+        try:
+            key = winreg.OpenKey(hive, path)
+        except OSError:
+            continue
+        with key:
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                try:
+                    name = winreg.EnumKey(key, i)
+                    with winreg.OpenKey(key, name) as sub:
+                        values = {}
+                        for j in range(winreg.QueryInfoKey(sub)[1]):
+                            vn, vv, _ = winreg.EnumValue(sub, j)
+                            values[vn] = vv
+                except OSError:
+                    continue
+                display = str(values.get("DisplayName", ""))
+                if "ldplayer" not in display.lower().replace(" ", ""):
+                    continue
+                place = values.get("InstallLocation") or ""
+                if not place:
+                    for field in ("DisplayIcon", "UninstallString"):
+                        raw = str(values.get(field, "")).strip('"')
+                        if raw:
+                            place = os.path.dirname(raw)
+                            break
+                if place and os.path.isdir(place):
+                    found.append(place)
+    return found
+
+
+def ld_installs(filename, roots=None):
     """Every LDPlayer install carrying this file, newest version first.
 
     Newest first because a machine can have two: version 9 left behind and
     version 14 in use. A fixed list of paths cannot express "the newer one",
     and the one that happened to be typed first won.
+
+    Windows is asked before the disk is searched, and every drive is searched
+    rather than the two that used to be named.
     """
     found = set()
-    for root in roots:
+    for place in ld_from_registry():
+        candidate = os.path.join(place, filename)
+        if os.path.exists(candidate):
+            found.add(candidate)
+    for root in (roots if roots is not None else fixed_drives()):
         for pattern in (root + "LDPlayer*/" + filename,
                         root + "LDPlayer*/*/" + filename,
                         root + "Program Files/LDPlayer*/*/" + filename,
@@ -224,11 +335,21 @@ def find_adb():
 
 
 class AdbCapture:
+    # False on WindowCapture: whether this class drives the real cursor.
+    # AdbCapture never does, input goes to the device instead.
+    moves_mouse = False
+
     def __init__(self, adb=None, serial=None):
         self.adb = adb or find_adb() or "adb"
         serial = serial or os.environ.get("DGUP_SERIAL")
-        self.method = os.environ.get("DGUP_SCREENCAP", "png")
         self.serial = serial
+        # DGUP_SCREENCAP pins a method outright. Failing that, a cached
+        # measurement from a previous run (see open_adb, which is what
+        # writes it) is trusted over guessing. "png" is only the fallback
+        # for a machine that has never been measured, since it was always
+        # the safe default before this had a benchmark at all.
+        self.method = (os.environ.get("DGUP_SCREENCAP")
+                       or userdata.cached_screencap_method() or "png")
 
     def _cmd(self, *args):
         base = [self.adb]
@@ -237,7 +358,7 @@ class AdbCapture:
         return base + list(args)
 
     def devices(self):
-        out = subprocess.run(
+        out = noconsole.run(
             self._cmd("devices"), capture_output=True, text=True, timeout=15
         ).stdout
         return [
@@ -252,6 +373,30 @@ class AdbCapture:
     RAW_HEADER_SIZES = (12, 16)  # older and newer Android versions
 
     def grab(self):
+        """One frame, with one reconnect attempt if the first try fails.
+
+        An emulator restart or a stale TCP connection can take ADB down
+        mid-run. There used to be a window frame underneath to fall back on;
+        without it a `CaptureError` here means the run stops, so it is worth
+        one retry -- reread the device list, pick a serial that is actually
+        on it, wait a moment for the connection to settle -- before that
+        happens. A second failure is not retried again and propagates: no
+        wait-and-retry loop, and no silent fall back to the window. The
+        caller shows capture.require_adb()'s message and the run stops.
+        """
+        try:
+            return self._grab_once()
+        except CaptureError:
+            try:
+                devices = self.devices()
+            except Exception:
+                devices = []
+            if devices and self.serial not in devices:
+                self.serial = devices[0]
+            time.sleep(1.0)
+            return self._grab_once()
+
+    def _grab_once(self):
         if self.method == "raw":
             try:
                 return self._grab_raw()
@@ -261,7 +406,7 @@ class AdbCapture:
         return self._grab_png()
 
     def _grab_raw(self):
-        res = subprocess.run(
+        res = noconsole.run(
             self._cmd("exec-out", "screencap"), capture_output=True, timeout=20)
         buf = res.stdout
         if not buf:
@@ -274,7 +419,7 @@ class AdbCapture:
         raise CaptureError("raw format not recognised, %d bytes" % len(buf))
 
     def _grab_png(self):
-        res = subprocess.run(
+        res = noconsole.run(
             self._cmd("exec-out", "screencap", "-p"), capture_output=True, timeout=20
         )
         if not res.stdout:
@@ -317,17 +462,17 @@ class AdbCapture:
             return False
 
     def tap(self, x, y):
-        subprocess.run(self._cmd("shell", "input", "tap", str(int(x)), str(int(y))),
-                       timeout=15)
+        noconsole.run(self._cmd("shell", "input", "tap", str(int(x)), str(int(y))),
+                      timeout=15)
 
     def swipe(self, x1, y1, x2, y2, ms=300):
-        subprocess.run(self._cmd("shell", "input", "swipe", str(int(x1)),
-                                 str(int(y1)), str(int(x2)), str(int(y2)), str(ms)),
-                       capture_output=True, timeout=20)
+        noconsole.run(self._cmd("shell", "input", "swipe", str(int(x1)),
+                                str(int(y1)), str(int(x2)), str(int(y2)), str(ms)),
+                      capture_output=True, timeout=20)
 
     def back(self):
-        subprocess.run(self._cmd("shell", "input", "keyevent", "4"),
-                       capture_output=True, timeout=15)
+        noconsole.run(self._cmd("shell", "input", "keyevent", "4"),
+                      capture_output=True, timeout=15)
         return True
 
     def focus(self):
@@ -337,27 +482,29 @@ class AdbCapture:
 class WindowCapture:
     """Frames and input exclusively via the window, without ADB.
 
-    Frames come from screen capture, that was already the case before and is
-    fast, measured 9 ms against 430 ms with ADB. Input goes through the mouse
+    Frames come from screen capture, fast (measured 9 ms against roughly
+    400 ms for ADB) but not free of it: mss photographs the screen
+    rectangle where the window sits, not the window itself. A window
+    visible but unfocused is captured correctly, that is the case this
+    mode lives on. A window obscured by another one returns that other
+    window's picture instead; a minimised window returns black, and
+    `_window` below refuses it outright rather than trust that; night
+    light or any colour profile tints every frame, and every threshold in
+    dungeon.py is a threshold on colour. Input goes through the mouse
     instead of ADB.
 
-    The price for that: the mouse is blocked during the run and the window
-    must be visible and in the foreground. It also computes in window
-    coordinates, not device coordinates. Anyone using relative positions
-    notices none of that.
+    The price for all of that: the mouse is blocked during the run and the
+    window must be visible, unobscured and in the foreground. It also
+    computes in window coordinates, not device coordinates. Anyone using
+    relative positions notices none of that.
 
-    `last_bot_move` is a monotonic timestamp, refreshed every time this class
-    moves the real cursor for one of its own clicks or swipes. A mouse-
-    movement watcher can compare against it to tell the bot's own cursor
-    movement apart from a human grabbing the mouse.
-
-    A plain busy flag was tried first and was not enough: a tap() finishes
-    in well under 100 ms, faster than a watcher polling every 200 ms is
-    guaranteed to sample, so most clicks never got caught mid-flight and
-    were misread as a human interruption. A timestamp does not have that
-    race, the watcher just waits out a grace window after the most recent
-    stamp instead of needing to observe the move itself.
+    This class used to stamp a `last_bot_move` timestamp on every cursor
+    move it made, so that guard.py could tell its own clicks apart from a
+    human grabbing the mouse. That watcher is gone -- see guard.py -- and
+    with it the stamp.
     """
+
+    moves_mouse = True
 
     def __init__(self, title_contains="LDPlayer"):
         import mss  # noqa
@@ -367,10 +514,6 @@ class WindowCapture:
         self.gw = __import__("pygetwindow")
         self.title = title_contains
         self._input = None
-        self.last_bot_move = 0.0
-
-    def _note_move(self):
-        self.last_bot_move = time.monotonic()
 
     # ------------------------------------------------------------------
     def _window(self):
@@ -388,6 +531,50 @@ class WindowCapture:
         box = {"left": left, "top": top, "width": width, "height": height}
         shot = np.array(self.mss.grab(box))
         return cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
+
+    def obscured(self):
+        """Is another window drawn over the emulator's rectangle?
+
+        This reads the screen where the window sits, not the window itself,
+        so whatever is in front of it is what comes back -- a browser, this
+        program's own window, anything. A bot that a player starts and then
+        watches never meets that; a helper that runs all day while the same
+        player works on the same screen meets it constantly, and the frame
+        it gets is a picture of something else entirely.
+
+        Asked at five points rather than one: a window covering a corner is
+        already enough to hide the counter or the button.
+
+        True, False, or None when it cannot be told -- no Windows API, or a
+        window that has gone away between two calls. None is not False:
+        callers must not report a covered window on a guess.
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            win = self._window()
+            hwnd = int(getattr(win, "_hWnd", 0) or 0)
+            if not hwnd:
+                return None
+            user32 = ctypes.windll.user32
+            user32.WindowFromPoint.argtypes = [wintypes.POINT]
+            user32.WindowFromPoint.restype = wintypes.HWND
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            left, top, width, height = self.geometry()
+            spots = ((0.5, 0.5), (0.25, 0.25), (0.75, 0.25),
+                     (0.25, 0.75), (0.75, 0.75))
+            for fx, fy in spots:
+                point = wintypes.POINT(int(left + fx * width),
+                                       int(top + fy * height))
+                at = user32.WindowFromPoint(point)
+                if not at:
+                    continue
+                if int(user32.GetAncestor(at, 2) or 0) != hwnd:   # GA_ROOT
+                    return True
+            return False
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     def _pi(self):
@@ -421,10 +608,8 @@ class WindowCapture:
         ax, ay = self._abs(x, y)
         self.focus()
         pi.moveTo(ax, ay)
-        self._note_move()
         time.sleep(0.04)
         pi.click()
-        self._note_move()
         time.sleep(0.04)
 
     def swipe(self, x1, y1, x2, y2, ms=300):
@@ -439,17 +624,14 @@ class WindowCapture:
         ax2, ay2 = self._abs(x2, y2)
         steps = max(8, int(ms / 25))
         pi.moveTo(ax1, ay1)
-        self._note_move()
         time.sleep(0.05)
         pi.mouseDown()
         for i in range(1, steps + 1):
             t = i / float(steps)
             pi.moveTo(int(ax1 + (ax2 - ax1) * t), int(ay1 + (ay2 - ay1) * t))
-            self._note_move()
             time.sleep(ms / 1000.0 / steps)
         time.sleep(0.08)
         pi.mouseUp()
-        self._note_move()
         time.sleep(0.1)
 
     def back(self):
@@ -474,117 +656,106 @@ class WindowCapture:
         pass
 
 
-class HybridCapture:
-    """Frames via window capture, clicks via ADB.
+def _pick_device(cap):
+    """Serial of a device that actually returns a frame.
 
-    Reason: an ADB screenshot costs about 430 ms on the test system and thus
-    dictates the bot's pace. A window capture is usually 30 to 60 ms. Clicks
-    keep going through ADB, so the mouse stays free and the window may sit
-    in the background as long as it stays visible.
-
-    Coordinates differ between the window image and the device, so the
-    conversion factor is determined once from a calibration of each image.
+    The device list alone is not enough evidence, a stale TCP connection
+    still shows up on it. `works()` is the real test, one per candidate,
+    the preferred serial first if it is on the list at all.
     """
-
-    def __init__(self, window, adb):
-        self.window = window
-        self.adb = adb
-        self.transform = None
-
-    def grab(self):
-        return self.window.grab()
-
-    def calibrate_transform(self, calibrate_fn):
-        """Determine the factor and offset between window image and device image."""
-        win = calibrate_fn(self.window.grab())
-        dev = calibrate_fn(self.adb.grab())
-        scale = dev["cell_w"] / win["cell_w"]
-        self.transform = dict(
-            scale=scale,
-            dx=dev["grid_x0"] - win["grid_x0"] * scale,
-            dy=dev["grid_y0"] - win["grid_y0"] * scale,
-        )
-        # Cross-check, the cell heights must fit with the same factor
-        err = abs(win["cell_h"] * scale - dev["cell_h"]) / dev["cell_h"]
-        if err > 0.03:
-            raise CaptureError(
-                "window-to-device conversion implausible, deviation %.1f %%"
-                % (err * 100))
-        return self.transform
-
-    def tap(self, x, y):
-        if self.transform is None:
-            # Without a conversion, coordinates are thought of as device
-            # coordinates already, the way the dungeon bot does it. Pass
-            # straight through in that case.
-            self.adb.tap(x, y)
-            return
-        t = self.transform
-        self.adb.tap(x * t["scale"] + t["dx"], y * t["scale"] + t["dy"])
-
-    def swipe(self, x1, y1, x2, y2, ms=300):
-        import subprocess
-        try:
-            subprocess.run(self.adb._cmd("shell", "input", "swipe", str(int(x1)),
-                                         str(int(y1)), str(int(x2)), str(int(y2)),
-                                         str(ms)),
-                           capture_output=True, timeout=20)
-        except Exception as err:
-            raise CaptureError("swipe via ADB failed: %s" % err)
-
-    def back(self):
-        import subprocess
-        try:
-            subprocess.run(self.adb._cmd("shell", "input", "keyevent", "4"),
-                           capture_output=True, timeout=15)
-            return True
-        except Exception:
-            return False
-
-    def geometry(self):
-        return self.window.geometry()
-
-    def focus(self):
-        return self.window.focus()
-
-    @property
-    def method(self):
-        return "window+ADB"
-
-    @method.setter
-    def method(self, value):
-        self.adb.method = value
+    try:
+        devices = cap.devices()
+    except Exception:
+        devices = []
+    order = ([cap.serial] if cap.serial in devices else []) + \
+            [d for d in devices if d != cap.serial]
+    if cap.serial and cap.serial not in devices:
+        print("preferred device %s is not in the list %s" % (cap.serial, devices))
+        order = devices
+    for serial in order:
+        cap.serial = serial
+        if cap.works():
+            return serial, devices
+        print("device %s returns no frame, skipping" % serial)
+    raise _adb_not_answering(cap.adb, devices)
 
 
-def open_capture(prefer="adb", **kwargs):
-    if prefer == "adb":
-        cap = AdbCapture(**{k: v for k, v in kwargs.items() if k in ("adb", "serial")})
-        try:
-            devs = cap.devices()
-        except Exception as err:  # ADB fehlt oder antwortet nicht
-            devs = []
-            print("ADB not usable (%s), falling back to window capture" % err)
+def _adb_not_answering(adb_path, devices):
+    return CaptureError(
+        "Helpermon is set to read the screen through ADB, and ADB is not "
+        "answering.\n\n"
+        "In LDPlayer: Settings, Other settings, ADB debugging -> on. "
+        "LDPlayer switches it off again between sessions, so it is worth "
+        "checking whenever a run stops here.\n\n"
+        "adb.exe found at: %s\n"
+        "Devices it lists: %s\n\n"
+        "You can also turn ADB off with the switch at the top of the "
+        "window. The bot then reads the emulator window and drives your "
+        "real mouse, and the window has to stay visible and in front."
+        % (adb_path, ", ".join(devices) if devices else "none"))
 
-        if devs:
-            # try the desired device first, then the rest
-            order = ([cap.serial] if cap.serial in devs else []) +\
-                    [d for d in devs if d != cap.serial]
-            if cap.serial and cap.serial not in devs:
-                print("preferred device %s is not in the list %s"
-                      % (cap.serial, devs))
-                order = devs
-            for serial in order:
-                cap.serial = serial
-                if cap.works():
-                    print("ADB via %s, device %s" % (cap.adb, serial))
-                    if len(devs) > 1:
-                        print("  (chosen from %s, pin it with DGUP_SERIAL)" % devs)
-                    return cap
-                print("device %s returns no frame, skipping" % serial)
-            print("no ADB device returns a frame, falling back to window capture")
-        else:
-            print("ADB reported no device, falling back to window capture")
-    return WindowCapture(**{k: v for k, v in kwargs.items() if k == "title_contains"})
+
+def _no_adb_found():
+    return CaptureError(
+        "Helpermon is set to read the screen through ADB, and no adb.exe "
+        "was found on this machine.\n\n"
+        "In LDPlayer: Settings, Other settings, ADB debugging -> on. "
+        "LDPlayer switches it off again between sessions, so it is worth "
+        "checking whenever a run stops here.\n\n"
+        "Point to adb.exe with the DGUP_ADB environment variable if it is "
+        "installed somewhere this search does not look.\n\n"
+        "You can also turn ADB off with the switch at the top of the "
+        "window. The bot then reads the emulator window and drives your "
+        "real mouse, and the window has to stay visible and in front.")
+
+
+def _ensure_method_measured(cap):
+    """Benchmark raw against png once per machine, and cache the winner.
+
+    Skipped once DGUP_SCREENCAP or a previous run's cache already answers
+    the question -- benchmarking costs several frames, and repeating that
+    on every process start would tax exactly the run it is meant to speed
+    up (see PLAN_ADB_ONLY.md, not shipped publicly).
+    """
+    if os.environ.get("DGUP_SCREENCAP") or userdata.cached_screencap_method():
+        return
+    timings = cap.benchmark()
+    if timings:
+        userdata.set_cached_screencap_method(cap.method)
+
+
+def open_adb(adb=None, serial=None, **kwargs):
+    """Frames and clicks both via ADB.
+
+    Raises CaptureError, with the message every caller should show, if no
+    adb.exe can be found or no device it lists returns a frame. No fall
+    back to the window here -- that decision belongs to open_for, not to
+    this function silently making it.
+    """
+    path = adb or find_adb()
+    if not path:
+        raise _no_adb_found()
+    cap = AdbCapture(adb=path, serial=serial)
+    chosen, devices = _pick_device(cap)
+    if len(devices) > 1:
+        print("ADB via %s, device %s (chosen from %s, pin it with DGUP_SERIAL)"
+              % (cap.adb, chosen, devices))
+    else:
+        print("ADB via %s, device %s" % (cap.adb, chosen))
+    _ensure_method_measured(cap)
+    return cap
+
+
+def require_adb():
+    """Raise CaptureError, with the message every caller should show,
+    unless ADB actually answers right now.
+
+    Called from the switch (widgets.AdbSwitch), from every start button,
+    from the setup wizard, from the passive helper and from every CLI
+    main -- the one place that formulates the message, so it reads the
+    same wherever a run can stop here.
+    """
+    open_adb()
 
 
 def _find_emulator_window(title_contains="LDPlayer"):
@@ -653,77 +824,17 @@ def open_window(title_contains="LDPlayer", **kwargs):
     return win
 
 
-def open_best(title_contains="LDPlayer", prefer_adb=True, **kwargs):
-    """Best available source. ADB for input first, then the window.
+def open_for(adb, title_contains="LDPlayer", **kwargs):
+    """Chooses one of the two operating modes. What every caller uses.
 
-    Frames come from the window in both cases, that is clearly faster. The
-    only difference is how clicks are sent.
+    `adb` is the stored switch (userdata.adb_mode()), a decision already
+    made, not a preference to weigh against anything else: with the switch
+    on, ADB is required, and a failure is reported through CaptureError
+    rather than quietly swapped for the window. That silent fall back is
+    exactly what this module used to do and what PLAN_ADB_ONLY.md set out
+    to remove.
     """
-    if prefer_adb:
-        try:
-            hybrid = open_window_adb(title_contains, **kwargs)
-            if isinstance(hybrid, HybridCapture):
-                return hybrid
-        except Exception:
-            pass
-    return open_window(title_contains, **kwargs)
-
-
-def open_window_adb(title_contains="LDPlayer", **kwargs):
-    """Frames via window capture, clicks via ADB, without conversion.
-
-    For the dungeon bot. It works with relative positions and computes
-    clicks into device coordinates itself, so it needs no conversion factor.
-    open_hybrid, in contrast, determines the factor via the minigame
-    calibration, and that fails in the menu because no game card is visible
-    there.
-    """
-    adb = open_capture(prefer="adb", **kwargs)
-    if not isinstance(adb, AdbCapture):
-        return adb
-    win, _rejected = _find_emulator_window(title_contains)
-    if win is None:
-        print("no suitable window found, staying with ADB")
-        return adb
-    score = _window_shows_the_game(win, adb)
-    if score < FRAMES_AGREE_MIN:
-        print("the window does not show what the device does (%.2f), "
-              "staying with ADB" % score)
-        return adb
-    print("window capture active (%.2f), clicks via ADB" % score)
-    return HybridCapture(win, adb)
-
-
-def _window_shows_the_game(win, adb):
-    """Agreement between the window and the device, or -1 if it cannot be had."""
-    try:
-        return frames_agree(win.grab(), adb.grab())
-    except Exception as err:
-        print("could not compare window and device (%s)" % err)
-        return -1.0
-
-
-def open_hybrid(calibrate_fn, title_contains="LDPlayer", **kwargs):
-    """Tries window capture plus ADB clicks. Falls back to pure ADB on
-    trouble, that is slower but insensitive."""
-    adb = open_capture(prefer="adb", **kwargs)
-    if not isinstance(adb, AdbCapture):
-        return adb
-    win, _rejected = _find_emulator_window(title_contains)
-    if win is None:
-        print("no suitable window found, staying with ADB")
-        return adb
-    score = _window_shows_the_game(win, adb)
-    if score < FRAMES_AGREE_MIN:
-        print("the window does not show what the device does (%.2f), "
-              "staying with ADB" % score)
-        return adb
-    hybrid = HybridCapture(win, adb)
-    try:
-        hybrid.calibrate_transform(calibrate_fn)
-    except Exception as err:
-        print("window capture not usable (%s), staying with ADB" % err)
-        return adb
-    print("window capture active, factor %.3f, clicks still via ADB"
-          % hybrid.transform["scale"])
-    return hybrid
+    if adb:
+        return open_adb(**{k: v for k, v in kwargs.items() if k in ("adb", "serial")})
+    return open_window(title_contains=title_contains,
+                       **{k: v for k, v in kwargs.items() if k not in ("adb", "serial")})

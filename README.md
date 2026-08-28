@@ -6,11 +6,7 @@
 > game are the property of their owners. Nothing from the game is contained
 > here; what the bots need, they learn from your own screen.
 
-Three automation tools for Digimon UP running in LDPlayer, plus a launcher
-and a setup wizard. There is a fourth, smaller thing in the launcher window:
-a passive helper that watches the game's main screen while Helpermon is open,
-collects the bond token from your partner and keeps Auto Spend for Hologram
-Tickets running. It has no Start button, only a switch.
+Automation tools for Digimon UP running in LDPlayer.
 
 ----------------------------------------------------------------------------------------------------------------------------------
 

@@ -14,7 +14,7 @@ Automation tools for Digimon UP running in LDPlayer.
 2. UNZIP AND RUN "install.bat"
 3. START with "Start Helpermon.bat" or using the desktop shortcut
 4. Have fun farming
-5. Emerald fund: https://ko-fi.com/digiprime000 <3
+5. Emerald fund: https://ko-fi.com/digipr1me <3
 
 ----------------------------------------------------------------------------------------------------------------------------------
 

@@ -60,7 +60,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Where the money goes and the code comes from. Shown wherever a locked
 # feature explains itself, so it is written down once.
-KOFI_URL = "https://ko-fi.com/digiprime000"
+KOFI_URL = "https://ko-fi.com/digipr1me"
 
 CODES_FILE = os.path.join(HERE, "codes.txt")
 # The redeemed code, in the data folder rather than in the settings file:

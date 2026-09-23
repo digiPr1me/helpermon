@@ -49,7 +49,7 @@ import userdata
 import widgets
 from version import VERSION
 
-GITHUB_ISSUES = "https://github.com/digiPrime000/helpermon/issues/new/choose"
+GITHUB_ISSUES = "https://github.com/digiPr1me/helpermon/issues/new/choose"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _APPDATA = os.environ.get("APPDATA") or os.path.expanduser("~")

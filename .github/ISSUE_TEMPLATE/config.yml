@@ -8,16 +8,16 @@
 blank_issues_enabled: true
 contact_links:
   - name: A question, or an idea you want to talk over first
-    url: https://github.com/digiPrime000/helpermon/discussions
+    url: https://github.com/digiPr1me/helpermon/discussions
     about: >
       Discussions are the place for "how do I", "is this normal", and ideas
       that are not a request yet. Nothing needs a form there.
   - name: It does not install, or Windows is in the way
-    url: https://github.com/digiPrime000/helpermon/blob/main/INSTALL.md#when-windows-gets-in-the-way
+    url: https://github.com/digiPr1me/helpermon/blob/main/INSTALL.md#when-windows-gets-in-the-way
     about: >
       SmartScreen, an antivirus warning, a bot whose log looks right while
       nothing happens in the game — those have known answers.
   - name: A bot behaves oddly
-    url: https://github.com/digiPrime000/helpermon/blob/main/QUICKSTART.md#if-something-does-not-work
+    url: https://github.com/digiPr1me/helpermon/blob/main/QUICKSTART.md#if-something-does-not-work
     about: >
       The symptom table. Worth the thirty seconds before writing a report.
